@@ -962,8 +962,8 @@ function generarTiendaNube(direct) {
 
     const isLibros = tipoProducto === 'libros';
 
-    // Step 2: Match by name (fallback - ONLY if not 'libros' per user request)
-    if (newPVP === null && tnNombre && !isLibros) {
+    // Step 2: Match by exact name (fallback for missing or corrupted EANs)
+    if (newPVP === null && tnNombre) {
       const tnDescNorm = normDesc(tnNombre);
       const tnDescCompact = normDescCompact(tnNombre);
 
@@ -985,25 +985,13 @@ function generarTiendaNube(direct) {
         matchGestionEAN = m.ean || '';
       }
 
-      // 2c: Containment
-      if (newPVP === null && tnDescNorm && tnDescNorm.length >= 3) {
-        for (const entry of gestionDescList) {
-          if (entry.descNorm.includes(tnDescNorm) || tnDescNorm.includes(entry.descNorm)) {
-            const shorter = Math.min(entry.descNorm.length, tnDescNorm.length);
-            const longer = Math.max(entry.descNorm.length, tnDescNorm.length);
-            if (shorter / longer >= 0.4) {
-              newPVP = entry.pvp;
-              matchType = 'desc_contains';
-              matchDesc = entry.desc;
-              matchGestionEAN = entry.ean || '';
-              break;
-            }
-          }
-          // Compact containment
-          if (tnDescCompact && entry.descCompact) {
-            if (entry.descCompact.includes(tnDescCompact) || tnDescCompact.includes(entry.descCompact)) {
-              const shorter = Math.min(entry.descCompact.length, tnDescCompact.length);
-              const longer = Math.max(entry.descCompact.length, tnDescCompact.length);
+      // 2c & 2d: Containment and Fuzzy matching (ONLY for Juguetes/General)
+      if (newPVP === null && !isLibros) {
+        if (tnDescNorm && tnDescNorm.length >= 3) {
+          for (const entry of gestionDescList) {
+            if (entry.descNorm.includes(tnDescNorm) || tnDescNorm.includes(entry.descNorm)) {
+              const shorter = Math.min(entry.descNorm.length, tnDescNorm.length);
+              const longer = Math.max(entry.descNorm.length, tnDescNorm.length);
               if (shorter / longer >= 0.4) {
                 newPVP = entry.pvp;
                 matchType = 'desc_contains';
@@ -1012,26 +1000,38 @@ function generarTiendaNube(direct) {
                 break;
               }
             }
+            // Compact containment
+            if (tnDescCompact && entry.descCompact) {
+              if (entry.descCompact.includes(tnDescCompact) || tnDescCompact.includes(entry.descCompact)) {
+                const shorter = Math.min(entry.descCompact.length, tnDescCompact.length);
+                const longer = Math.max(entry.descCompact.length, tnDescCompact.length);
+                if (shorter / longer >= 0.4) {
+                  newPVP = entry.pvp;
+                  matchType = 'desc_contains';
+                  matchDesc = entry.desc;
+                  matchGestionEAN = entry.ean || '';
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        if (newPVP === null && tnDescNorm) {
+          let bestSim = 0, bestEntry = null;
+          for (const entry of gestionDescList) {
+            const sim = combinedSimilarity(tnNombre, entry.desc);
+            if (sim > bestSim) { bestSim = sim; bestEntry = entry; }
+          }
+          if (bestSim >= 0.40 && bestEntry) {
+            newPVP = bestEntry.pvp;
+            matchType = 'desc_fuzzy';
+            matchDesc = bestEntry.desc;
+            matchGestionEAN = bestEntry.ean || '';
           }
         }
       }
-
-      // 2d: Fuzzy (combined similarity)
-      if (newPVP === null && tnDescNorm) {
-        let bestSim = 0, bestEntry = null;
-        for (const entry of gestionDescList) {
-          const sim = combinedSimilarity(tnNombre, entry.desc);
-          if (sim > bestSim) { bestSim = sim; bestEntry = entry; }
-        }
-        if (bestSim >= 0.40 && bestEntry) {
-          newPVP = bestEntry.pvp;
-          matchType = 'desc_fuzzy';
-          matchDesc = bestEntry.desc;
-          matchGestionEAN = bestEntry.ean || '';
-        }
-      }
     }
-
     // Update price if matched and price changed
     if (newPVP !== null) {
       const oldPrecio = row[precioIdx];
