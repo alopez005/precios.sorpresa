@@ -960,8 +960,10 @@ function generarTiendaNube(direct) {
       matchGestionEAN = ean;
     }
 
-    // Step 2: Match by name (fallback)
-    if (newPVP === null && tnNombre) {
+    const isLibros = tipoProducto === 'libros';
+
+    // Step 2: Match by name (fallback - ONLY if not 'libros' per user request)
+    if (newPVP === null && tnNombre && !isLibros) {
       const tnDescNorm = normDesc(tnNombre);
       const tnDescCompact = normDescCompact(tnNombre);
 
