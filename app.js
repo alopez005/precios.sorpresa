@@ -831,6 +831,8 @@ let tnRows = [];
 let tnHeaders = [];
 let tnSep = ';';
 let tnUpdatedRows = [];
+let currentTNPreview = [];
+let currentTNSuffix = '';
 
 function onGestionFile(file, direct) {
   if (!file) return;
@@ -984,67 +986,21 @@ function generarTiendaNube(direct) {
         matchDesc = m.desc;
         matchGestionEAN = m.ean || '';
       }
-
-      // 2c & 2d: Containment and Fuzzy matching (ONLY for Juguetes/General)
-      if (newPVP === null && !isLibros) {
-        if (tnDescNorm && tnDescNorm.length >= 3) {
-          for (const entry of gestionDescList) {
-            if (entry.descNorm.includes(tnDescNorm) || tnDescNorm.includes(entry.descNorm)) {
-              const shorter = Math.min(entry.descNorm.length, tnDescNorm.length);
-              const longer = Math.max(entry.descNorm.length, tnDescNorm.length);
-              if (shorter / longer >= 0.4) {
-                newPVP = entry.pvp;
-                matchType = 'desc_contains';
-                matchDesc = entry.desc;
-                matchGestionEAN = entry.ean || '';
-                break;
-              }
-            }
-            // Compact containment
-            if (tnDescCompact && entry.descCompact) {
-              if (entry.descCompact.includes(tnDescCompact) || tnDescCompact.includes(entry.descCompact)) {
-                const shorter = Math.min(entry.descCompact.length, tnDescCompact.length);
-                const longer = Math.max(entry.descCompact.length, tnDescCompact.length);
-                if (shorter / longer >= 0.4) {
-                  newPVP = entry.pvp;
-                  matchType = 'desc_contains';
-                  matchDesc = entry.desc;
-                  matchGestionEAN = entry.ean || '';
-                  break;
-                }
-              }
-            }
-          }
-        }
-
-        if (newPVP === null && tnDescNorm) {
-          let bestSim = 0, bestEntry = null;
-          for (const entry of gestionDescList) {
-            const sim = combinedSimilarity(tnNombre, entry.desc);
-            if (sim > bestSim) { bestSim = sim; bestEntry = entry; }
-          }
-          if (bestSim >= 0.40 && bestEntry) {
-            newPVP = bestEntry.pvp;
-            matchType = 'desc_fuzzy';
-            matchDesc = bestEntry.desc;
-            matchGestionEAN = bestEntry.ean || '';
-          }
-        }
-      }
     }
     // Update price if matched and price changed
     if (newPVP !== null) {
       const oldPrecio = row[precioIdx];
       const oldPrecioNum = parsePrice(oldPrecio);
       if (Math.abs(oldPrecioNum - newPVP) > 0.01) {
-        row[precioIdx] = formatTNPrice(newPVP);
         matchCount++;
         statsByType[matchType] = (statsByType[matchType] || 0) + 1;
         previewRows.push({
+          rowIdx: i,
+          checked: true,
           ean: barCodeIdx >= 0 ? row[barCodeIdx] : '',
           nombre: tnNombre,
           oldPrecio,
-          newPrecio: row[precioIdx],
+          newPrecio: formatTNPrice(newPVP),
           matchType,
           matchDesc,
           matchGestionEAN,
@@ -1052,8 +1008,10 @@ function generarTiendaNube(direct) {
         });
       }
     }
-    tnUpdatedRows.push(row);
   }
+
+  currentTNPreview = previewRows;
+  currentTNSuffix = suffix;
 
   // Show preview
   document.getElementById('tnPreview' + suffix).style.display = 'block';
@@ -1088,9 +1046,9 @@ function generarTiendaNube(direct) {
   const tbody = document.getElementById('tnBody' + suffix);
   tbody.innerHTML = '';
   if (previewRows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">No se encontraron precios diferentes para actualizar</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:24px">No se encontraron precios diferentes para actualizar</td></tr>';
   } else {
-    previewRows.forEach(p => {
+    previewRows.forEach((p, index) => {
       const tr = document.createElement('tr');
       const badgeColors = {
         ean: 'background:var(--green-bg);color:var(--green)',
@@ -1114,15 +1072,14 @@ function generarTiendaNube(direct) {
       if (p.matchType !== 'ean' && p.matchGestionEAN) {
         const tnHasEAN = p.tnEAN && p.tnEAN.length >= 8;
         if (tnHasEAN && p.tnEAN !== p.matchGestionEAN) {
-          // Both have barcodes but they're different
           eanWarning = `<br><span style="font-size:11px;color:var(--orange);font-weight:600">⚠ EAN diferente — TN: ${p.ean || '(vacío)'} vs Gestión: ${p.matchGestionEAN}</span>`;
         } else if (!tnHasEAN) {
-          // TN has no barcode, gestión does
           eanWarning = `<br><span style="font-size:11px;color:var(--blue)">ℹ Sin EAN en TN — Gestión: ${p.matchGestionEAN}</span>`;
         }
       }
 
       tr.innerHTML = `
+        <td class="td-cb"><input type="checkbox" class="cb" checked onchange="currentTNPreview[${index}].checked=this.checked"></td>
         <td style="font-family:'Space Mono',monospace;font-size:12px">${p.ean || '<span style="color:var(--text3)">—</span>'}</td>
         <td style="max-width:300px">${p.nombre}${descExtra}${eanWarning}</td>
         <td>${badge}</td>
@@ -1231,8 +1188,43 @@ function escapeCSVField(val, sep) {
   return s;
 }
 
+function toggleAllTN(checked, direct) {
+  const suffix = direct ? 'Direct' : '';
+  const tbody = document.getElementById('tnBody' + suffix);
+  if (!tbody) return;
+  const cbs = tbody.querySelectorAll('.cb');
+  cbs.forEach(cb => cb.checked = checked);
+  currentTNPreview.forEach(p => p.checked = checked);
+}
+
 function descargarTiendaNube() {
-  if (tnUpdatedRows.length < 2) { alert('No hay datos para exportar.'); return; }
+  if (tnRows.length < 2) { alert('No hay datos originales de Tienda Nube cargados.'); return; }
+
+  const checkedUpdates = new Map();
+  currentTNPreview.forEach(p => {
+    if (p.checked) checkedUpdates.set(p.rowIdx, p.newPrecio);
+  });
+
+  if (checkedUpdates.size === 0) {
+    alert('No hay productos seleccionados para exportar cambios.');
+    return;
+  }
+
+  const precioIdx = tnHeaders.findIndex(h => {
+    const l = h.toLowerCase().replace(/[""]/g, '').trim();
+    return l === 'precio';
+  });
+
+  tnUpdatedRows = [tnHeaders];
+  for (let i = 1; i < tnRows.length; i++) {
+    const row = [...tnRows[i]];
+    while (row.length < tnHeaders.length) row.push('');
+
+    if (checkedUpdates.has(i)) {
+      row[precioIdx] = checkedUpdates.get(i);
+    }
+    tnUpdatedRows.push(row);
+  }
 
   const csvContent = tnUpdatedRows.map(row =>
     row.map(cell => escapeCSVField(cell, tnSep)).join(tnSep)
