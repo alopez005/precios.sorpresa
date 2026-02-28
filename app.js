@@ -1201,8 +1201,23 @@ function descargarTiendaNube() {
   if (tnRows.length < 2) { alert('No hay datos originales de Tienda Nube cargados.'); return; }
 
   const checkedUpdates = new Map();
+  let fixBarcodeCount = 0;
+
   currentTNPreview.forEach(p => {
-    if (p.checked) checkedUpdates.set(p.rowIdx, p.newPrecio);
+    if (p.checked) {
+      let eanToFix = null;
+      // If we have a valid EAN from gestión
+      if (p.matchGestionEAN) {
+        const tnHasEAN = p.tnEAN && p.tnEAN.length >= 8;
+        const isSci = p.tnEAN && p.tnEAN.toUpperCase().includes('E');
+        // Fix if missing, too short, scientific notation, or just different
+        if (!tnHasEAN || isSci || p.tnEAN !== p.matchGestionEAN) {
+          eanToFix = p.matchGestionEAN;
+          fixBarcodeCount++;
+        }
+      }
+      checkedUpdates.set(p.rowIdx, { precio: p.newPrecio, newEan: eanToFix });
+    }
   });
 
   if (checkedUpdates.size === 0) {
@@ -1215,13 +1230,24 @@ function descargarTiendaNube() {
     return l === 'precio';
   });
 
+  const barCodeIdx = tnHeaders.findIndex(h => {
+    const l = h.toLowerCase().replace(/[""]/g, '').trim();
+    return l.includes('código de barras') || l.includes('codigo de barras') || l === 'barcode';
+  });
+
   tnUpdatedRows = [tnHeaders];
   for (let i = 1; i < tnRows.length; i++) {
     const row = [...tnRows[i]];
     while (row.length < tnHeaders.length) row.push('');
 
     if (checkedUpdates.has(i)) {
-      row[precioIdx] = checkedUpdates.get(i);
+      const update = checkedUpdates.get(i);
+      row[precioIdx] = update.precio;
+
+      // Auto-fix the barcode if needed
+      if (barCodeIdx >= 0 && update.newEan) {
+        row[barCodeIdx] = update.newEan;
+      }
     }
     tnUpdatedRows.push(row);
   }
