@@ -760,22 +760,48 @@ function exportarInterno() {
   const selected = resultados.filter(r => r.checked && r.estado !== 'notfound');
   if (selected.length === 0) { alert('No hay productos seleccionados para exportar.'); return; }
 
-  const mPrecioCol = maestroColumns[document.getElementById('selMaestroPrecio').value];
+  // The strict headers requested by the user
+  const headers = [
+    'codigo',
+    'rubro',
+    'descripcion',
+    'marca',
+    'precio de compra',
+    'lista 1',
+    'stock',
+    'stock minimo',
+    'alicuotaIva',
+    'CodigoProv'
+  ];
 
-  // Build rows preserving original column order
+  // Helper function to find data from the old row regardless of exact case
+  const getColData = (rowObj, colKeyword) => {
+    const key = Object.keys(rowObj).find(k => k.toLowerCase() === colKeyword.toLowerCase());
+    return key ? rowObj[key] : '';
+  };
+
   const exportRows = selected.map(r => {
     const row = {};
-    // Copy all original columns in order
-    maestroColumnOrder.forEach(col => {
-      row[col] = r.maestroRow[col];
+
+    // Map existing data to the new strict headers if they existed in the original file
+    headers.forEach(h => {
+      // Special handlings for slightly different common naming
+      let val = '';
+      if (h === 'codigo' && getColData(r.maestroRow, 'barras')) val = getColData(r.maestroRow, 'barras');
+      if (h === 'lista 1' && getColData(r.maestroRow, 'lista1')) val = getColData(r.maestroRow, 'lista1');
+      if (h === 'precio de compra' && getColData(r.maestroRow, 'costo')) val = getColData(r.maestroRow, 'costo');
+
+      // Default generic fallback
+      if (!val) val = getColData(r.maestroRow, h);
+
+      row[h] = val;
     });
 
-    // Update the target price column
+    // Update the crucial target price column directly
     if (tipoProducto === 'libros') {
-      const lista1Col = findLista1Col();
-      if (lista1Col) row[lista1Col] = r.precioNuevo;
+      row['lista 1'] = r.precioNuevo;
     } else {
-      row[mPrecioCol] = r.precioNuevo;
+      row['precio de compra'] = r.precioNuevo;
     }
 
     // Add audit columns at end
@@ -789,10 +815,9 @@ function exportarInterno() {
     return row;
   });
 
-  // Ensure column order
-  const headers = [...maestroColumnOrder, '_PrecioAnterior', '_PrecioNuevo', '_Variacion%', '_Estado', '_Match', '_Fecha'];
+  const finalHeaders = [...headers, '_PrecioAnterior', '_PrecioNuevo', '_Variacion%', '_Estado', '_Match', '_Fecha'];
 
-  const ws = XLSX.utils.json_to_sheet(exportRows, { header: headers });
+  const ws = XLSX.utils.json_to_sheet(exportRows, { header: finalHeaders });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Actualización');
   XLSX.writeFile(wb, `PriceSync_Interno_${new Date().toISOString().slice(0, 10)}.xlsx`);
