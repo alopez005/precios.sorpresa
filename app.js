@@ -1,3 +1,28 @@
+// ===== TOAST SYSTEM =====
+function toast(msg, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+
+// ===== CONFIRM DIALOG =====
+let confirmResolve = null;
+function showConfirm(title, msg) {
+  return new Promise(resolve => {
+    confirmResolve = resolve;
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMsg').textContent = msg;
+    document.getElementById('confirmOverlay').classList.add('visible');
+  });
+}
+function closeConfirm(result) {
+  document.getElementById('confirmOverlay').classList.remove('visible');
+  if (confirmResolve) { confirmResolve(result); confirmResolve = null; }
+}
+
 // ===== STATE =====
 let tipoProducto = 'juguetes';
 let maestroData = null;
@@ -16,27 +41,44 @@ function setTipo(tipo) {
   tipoProducto = tipo;
   document.getElementById('btnJuguetes').className = 'tipo-btn' + (tipo === 'juguetes' ? ' active-juguetes' : '');
   document.getElementById('btnLibros').className = 'tipo-btn' + (tipo === 'libros' ? ' active-libros' : '');
-  // Hide IVA card for libros (PVP is final price)
   document.getElementById('ivaCard').style.display = tipo === 'libros' ? 'none' : 'block';
 }
 
-// ===== FILE LOADING =====
+// ===== DRAG & DROP (FIX: was missing in original) =====
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.dropzone').forEach(dz => {
+    dz.addEventListener('dragover', e => {
+      e.preventDefault();
+      dz.classList.add('dragover');
+    });
+    dz.addEventListener('dragleave', () => {
+      dz.classList.remove('dragover');
+    });
+    dz.addEventListener('drop', e => {
+      e.preventDefault();
+      dz.classList.remove('dragover');
+      const input = dz.querySelector('input[type="file"]');
+      if (e.dataTransfer.files.length && input) {
+        input.files = e.dataTransfer.files;
+        input.dispatchEvent(new Event('change'));
+      }
+    });
+  });
+});
+
+// ===== NORMALIZATION =====
 function normEAN(val) {
   if (val == null || val === '') return '';
   if (typeof val === 'number') {
     val = val.toFixed(0);
   } else {
     val = String(val).trim();
-    // Handle scientific notation: "6.53E+16" → full number
     if (/^\d+\.?\d*[eE][+\-]?\d+$/.test(val)) {
       try { val = BigInt(Math.round(parseFloat(val))).toString(); } catch (e) { val = parseFloat(val).toFixed(0); }
     }
-    // Remove trailing .0 from string representation of numbers
     if (/^\d+\.0+$/.test(val)) val = val.replace(/\.0+$/, '');
   }
-  // Strip dashes, spaces, dots
   val = val.replace(/[\s\-\.]/g, '');
-  // Keep only digits
   val = val.replace(/[^0-9]/g, '');
   return val;
 }
@@ -50,8 +92,6 @@ function normDesc(val) {
     .trim();
 }
 
-
-// Compact normalization: remove ALL spaces (catches "Fonoloco" vs "FONO LOCO")
 function normDescCompact(val) {
   if (!val) return '';
   return String(val).toLowerCase()
@@ -60,7 +100,71 @@ function normDescCompact(val) {
     .trim();
 }
 
+// ===== SIMILARITY FUNCTIONS (FIX: were missing in original) =====
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let curr = new Array(n + 1);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      curr[j] = a[i - 1] === b[j - 1]
+        ? prev[j - 1]
+        : 1 + Math.min(prev[j - 1], prev[j], curr[j - 1]);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
 
+function tokenOverlap(a, b) {
+  const ta = new Set(normDesc(a).split(' ').filter(t => t.length > 1));
+  const tb = new Set(normDesc(b).split(' ').filter(t => t.length > 1));
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let overlap = 0;
+  for (const t of ta) if (tb.has(t)) overlap++;
+  return overlap / Math.max(ta.size, tb.size);
+}
+
+function combinedSimilarity(a, b) {
+  const na = normDesc(a), nb = normDesc(b);
+  if (!na || !nb) return 0;
+  const maxLen = Math.max(na.length, nb.length);
+  const levSim = maxLen > 0 ? 1 - levenshtein(na, nb) / maxLen : 0;
+  const tokSim = tokenOverlap(a, b);
+  // Weight: 40% Levenshtein, 60% token overlap
+  return levSim * 0.4 + tokSim * 0.6;
+}
+
+// ===== PRICE PARSER =====
+function parsePrice(val) {
+  if (val == null) return 0;
+  let s = String(val).replace(/[^0-9.,]/g, '');
+  if (!s) return 0;
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+  if (hasComma && hasDot) {
+    const lastComma = s.lastIndexOf(',');
+    const lastDot = s.lastIndexOf('.');
+    if (lastComma > lastDot) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (hasComma) {
+    const match = s.match(/,(\d+)$/);
+    if (match && match[1].length === 2) {
+      s = s.replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  }
+  return parseFloat(s) || 0;
+}
+
+// ===== EXCEL READING =====
 function readExcelBuffer(buffer, fileName, headerRow, sheetName) {
   const isXLS = /\.xls$/i.test(fileName) && !/\.xlsx$/i.test(fileName);
   let wb;
@@ -127,51 +231,35 @@ function autoDetectHeaderRow(buffer, fileName, sheetName) {
   const ws = wb.Sheets[wsName];
   const allRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  // Find first row with 3+ non-empty text cells (not pure numbers),
-  // where ALL non-empty cells are text (to skip data rows),
-  // followed by a row with actual data
   for (let i = 0; i < Math.min(allRows.length - 1, 25); i++) {
     const row = allRows[i];
     if (!row) continue;
     const nonEmpty = row.filter(c => c != null && String(c).trim().length > 0);
     if (nonEmpty.length < 3) continue;
-
     const textCells = nonEmpty.filter(c => isNaN(Number(c)));
-    // At least 3 text cells and majority should be text (header row = mostly labels)
     if (textCells.length < 3 || textCells.length < nonEmpty.length * 0.6) continue;
-
-    // Check next row has data (and at least some non-text content like numbers)
     const nextRow = allRows[i + 1];
     if (!nextRow) continue;
     const nextNonEmpty = nextRow.filter(c => c != null && String(c).trim().length > 0);
-    if (nextNonEmpty.length >= 2) return i + 1; // 1-based
+    if (nextNonEmpty.length >= 2) return i + 1;
   }
   return 1;
 }
 
 function autoDetectColumn(columns, keywords, prioritizeFirst = false) {
   const kws = keywords.map(k => k.toLowerCase());
-
   // Exact match first
   for (const kw of kws) {
     for (let i = 0; i < columns.length; i++) {
       if (columns[i].toLowerCase() === kw) return i;
     }
   }
-
-  // Then partial match
-  let found = [];
+  // Partial match
   for (let i = 0; i < columns.length; i++) {
     const col = columns[i].toLowerCase();
     for (const kw of kws) {
-      if (col.includes(kw) || kw.includes(col)) {
-        found.push(i);
-        break;
-      }
+      if (col.includes(kw) || kw.includes(col)) return i;
     }
-  }
-  if (found.length > 0) {
-    return prioritizeFirst ? found[0] : found[0];
   }
   return 0;
 }
@@ -204,7 +292,6 @@ function onMaestroFile(file) {
       document.getElementById('dzMaestroFile').textContent = `✓ ${file.name} — ${maestroData.length} productos`;
       document.getElementById('maestroFields').style.display = 'grid';
 
-      // Autodetect columns - prioritize first column for EAN
       const eanIdx = autoDetectColumn(maestroColumns, ['codigo', 'ean', 'barras', 'isbn', 'upc', 'código', 'codbar'], true);
       const descIdx = autoDetectColumn(maestroColumns, ['descripcion', 'descripción', 'titulo', 'titulos', 'nombre', 'producto', 'detalle']);
       const precioIdx = autoDetectColumn(maestroColumns, ['precio compra', 'precio_compra', 'costo', 'precio costo', 'lista1', 'precio', 'pvp']);
@@ -216,9 +303,10 @@ function onMaestroFile(file) {
       populateSelect('selMaestroCodInt', maestroColumns, codIntIdx);
 
       checkReady();
+      toast(`Maestro cargado: ${maestroData.length} productos`, 'success');
     } catch (err) {
       console.error('Error loading maestro file:', err);
-      alert('Error al leer el archivo maestro:\n' + err.message);
+      toast('Error al leer el archivo maestro: ' + err.message, 'error');
     }
   };
   reader.readAsArrayBuffer(file);
@@ -233,14 +321,12 @@ function onProvFile(file) {
     try {
       provRawBuffer = e.target.result;
 
-      // Check for multiple sheets
       const sheets = getSheetNames(provRawBuffer, provFileName);
       const sheetSelect = document.getElementById('selProvSheet');
 
       if (sheets.length > 1) {
-        // Show sheet selector
         sheetSelect.innerHTML = '';
-        sheets.forEach((name, i) => {
+        sheets.forEach((name) => {
           const opt = document.createElement('option');
           opt.value = name;
           opt.textContent = name;
@@ -258,7 +344,7 @@ function onProvFile(file) {
       document.getElementById('provHeaderConfig').style.display = 'flex';
     } catch (err) {
       console.error('Error loading provider file:', err);
-      alert('Error al leer el archivo del proveedor:\n' + err.message);
+      toast('Error al leer el archivo del proveedor: ' + err.message, 'error');
     }
   };
   reader.readAsArrayBuffer(file);
@@ -279,19 +365,16 @@ function reloadProv() {
 }
 
 function loadProvFromBuffer(headerRow, sheetName) {
-  const result = readExcelBuffer(provRawBuffer, provFileName, headerRow, sheetName);
+  let result = readExcelBuffer(provRawBuffer, provFileName, headerRow, sheetName);
 
-  // Validate: if most headers are empty Col_X, the header row is probably wrong
   const realHeaders = result.columns.filter(h => !h.startsWith('Col_'));
   if (realHeaders.length < 2 && result.columns.length > 0) {
-    // Try next few rows
     for (let tryRow = headerRow + 1; tryRow <= headerRow + 5 && tryRow <= 25; tryRow++) {
       const retry = readExcelBuffer(provRawBuffer, provFileName, tryRow, sheetName);
       const retryReal = retry.columns.filter(h => !h.startsWith('Col_'));
       if (retryReal.length >= 2) {
         headerRow = tryRow;
-        result.data = retry.data;
-        result.columns = retry.columns;
+        result = retry;
         document.getElementById('provHeaderRow').value = tryRow;
         break;
       }
@@ -315,6 +398,7 @@ function loadProvFromBuffer(headerRow, sheetName) {
   populateSelect('selProvDesc', provColumns, descIdx);
 
   checkReady();
+  toast(`Proveedor cargado: ${provData.length} productos`, 'success');
 }
 
 function checkReady() {
@@ -335,10 +419,10 @@ function procesar() {
   const ivaMode = document.getElementById('selIVA').value;
   const ivaRate = parseFloat(document.getElementById('ivaRate').value) / 100;
 
-  // Build maestro index by EAN and description
+  // Build maestro indexes
   const maestroByEAN = new Map();
   const maestroByDesc = new Map();
-  const maestroByDescCompact = new Map(); // no-space version for "Fonoloco" vs "FONO LOCO"
+  const maestroByDescCompact = new Map();
   const maestroDescList = [];
   maestroData.forEach((row, idx) => {
     const ean = normEAN(row[mEanCol]);
@@ -352,7 +436,7 @@ function procesar() {
     if (descCompact) maestroByDescCompact.set(descCompact, idx);
   });
 
-  // Auto-detect if provider has real barcodes (8-14 digit numbers)
+  // Auto-detect if provider has real barcodes
   let provHasEAN = false;
   for (let i = 0; i < Math.min(provData.length, 20); i++) {
     const val = normEAN(provData[i][pEanCol]);
@@ -371,16 +455,8 @@ function procesar() {
     if (tipoProducto === 'libros') {
       precioNuevo = pPrecioRaw;
     } else {
-      if (ivaMode === 'neto') {
-        precioNuevo = pPrecioRaw * (1 + ivaRate);
-      } else {
-        precioNuevo = pPrecioRaw;
-      }
+      precioNuevo = ivaMode === 'neto' ? pPrecioRaw * (1 + ivaRate) : pPrecioRaw;
     }
-
-    // Matching en 2 niveles estrictos:
-    // 1) EAN (código de barras)
-    // 2) Descripción exacta
 
     let mIdx = -1;
     let matchType = 'notfound';
@@ -397,13 +473,11 @@ function procesar() {
       const pDescNorm = normDesc(pDesc);
       const pDescCompact = normDescCompact(pDesc);
 
-      // 2a: Exact normalized match
       if (pDescNorm && maestroByDesc.has(pDescNorm)) {
         mIdx = maestroByDesc.get(pDescNorm);
         matchType = 'desc_exact';
       }
 
-      // 2b: Exact compact match (no spaces: "Fonoloco" = "FONO LOCO")
       if (mIdx < 0 && pDescCompact && maestroByDescCompact.has(pDescCompact)) {
         mIdx = maestroByDescCompact.get(pDescCompact);
         matchType = 'desc_exact';
@@ -422,7 +496,6 @@ function procesar() {
 
       const variacion = precioAnterior > 0 ? ((precioNuevo - precioAnterior) / precioAnterior * 100) : 0;
 
-      // Calculate PVP
       let pvp = precioNuevo;
       if (tipoProducto !== 'libros') {
         const margin = parseFloat(document.getElementById('marginPct').value) / 100;
@@ -470,6 +543,8 @@ function procesar() {
     }
   });
 
+  const matched = resultados.filter(r => r.estado !== 'notfound').length;
+  toast(`Procesado: ${matched} matcheados de ${resultados.length} productos`, 'success');
   goStep(2);
 }
 
@@ -504,9 +579,15 @@ function goDirectTN() {
   document.getElementById('step3ind').classList.add('active');
 }
 
+// ===== SELECTION COUNTER (NEW) =====
+function updateSelectionCounter() {
+  const count = resultados.filter(r => r.checked && r.estado !== 'notfound').length;
+  const el = document.getElementById('selectionCounter');
+  if (el) el.textContent = `${count} seleccionado${count !== 1 ? 's' : ''}`;
+}
+
 // ===== RENDER REVIEW =====
 function renderReview() {
-  // Banner
   const banner = document.getElementById('reviewBanner');
   let bannerHTML = '';
   if (tipoProducto === 'libros') {
@@ -517,26 +598,23 @@ function renderReview() {
     bannerHTML = '🧸 Modo Juguetes / General — Precio de costo + margen';
   }
   if (!provHasEANGlobal) {
-    bannerHTML += '<br><span style="font-size:12px;opacity:0.85">⚠ Proveedor sin códigos de barras — matching automático por nombre de producto</span>';
+    bannerHTML += '<br><span style="font-size:12px;opacity:0.85">⚠ Proveedor sin códigos de barras — matching por nombre</span>';
   }
   banner.innerHTML = bannerHTML;
 
   // Stats
   const counts = { up: 0, down: 0, same: 0, notfound: 0 };
-  resultados.forEach(r => {
-    if (r.estado !== 'notfound') counts[r.estado]++;
-    else counts.notfound++;
-  });
+  resultados.forEach(r => { counts[r.estado]++; });
 
+  // FIX: active state now correctly applied to all pills including "Todos"
   const statsBar = document.getElementById('statsBar');
   statsBar.innerHTML = `
-    <div class="stat-pill up" onclick="setFiltro('up')">▲ ${counts.up} subieron</div>
-    <div class="stat-pill down" onclick="setFiltro('down')">▼ ${counts.down} bajaron</div>
-    <div class="stat-pill same" onclick="setFiltro('same')">= ${counts.same} sin cambio</div>
-    <div class="stat-pill notfound" onclick="setFiltro('notfound')">✗ ${counts.notfound} sin match</div>
-    <div class="stat-pill" style="background:var(--accent-bg);color:var(--accent2)" onclick="setFiltro(null)">Todos (${resultados.length})</div>
+    <div class="stat-pill up ${filtroActual === 'up' ? 'active' : ''}" onclick="setFiltro('up')">▲ ${counts.up} subieron</div>
+    <div class="stat-pill down ${filtroActual === 'down' ? 'active' : ''}" onclick="setFiltro('down')">▼ ${counts.down} bajaron</div>
+    <div class="stat-pill same ${filtroActual === 'same' ? 'active' : ''}" onclick="setFiltro('same')">= ${counts.same} sin cambio</div>
+    <div class="stat-pill notfound ${filtroActual === 'notfound' ? 'active' : ''}" onclick="setFiltro('notfound')">✗ ${counts.notfound} sin match</div>
+    <div class="stat-pill ${filtroActual === null ? 'active' : ''}" style="background:var(--accent-bg);color:var(--accent2)" onclick="setFiltro(null)">Todos (${resultados.length})</div>
   `;
-
 
   // Table header
   document.getElementById('reviewHead').innerHTML = `<tr>
@@ -560,8 +638,6 @@ function renderTableRows() {
   tbody.innerHTML = '';
 
   resultados.forEach((r, i) => {
-    // Filter
-    // Filter
     if (filtroActual && r.estado !== filtroActual) return;
     if (search) {
       const s = `${r.ean} ${r.descMaestro} ${r.descProv} ${r.codInt}`.toLowerCase();
@@ -572,7 +648,7 @@ function renderTableRows() {
 
     let matchBadge = '';
     if (r.matchType === 'ean') matchBadge = '<span class="badge badge-ean">EAN</span>';
-    else if (r.matchType === 'desc_exact') matchBadge = '<span class="badge badge-desc">DESC. EXACTA</span>';
+    else if (r.matchType === 'desc_exact') matchBadge = '<span class="badge badge-desc">DESC</span>';
     else matchBadge = '<span class="badge badge-notfound">SIN MATCH</span>';
 
     let estadoBadge = '';
@@ -582,13 +658,12 @@ function renderTableRows() {
     else estadoBadge = '<span class="badge badge-notfound">✗</span>';
 
     const priceClass = r.estado === 'up' ? 'price-up' : (r.estado === 'down' ? 'price-down' : 'price-same');
-
     const desc = r.descMaestro || r.descProv;
 
     const tr = document.createElement('tr');
     tr.className = rowClass;
     tr.innerHTML = `
-      <td class="td-cb">${r.estado === 'notfound' ? '<span style="color:var(--text3)">—</span>' : `<input type="checkbox" class="cb" ${r.checked ? 'checked' : ''} onchange="resultados[${i}].checked=this.checked">`}</td>
+      <td class="td-cb">${r.estado === 'notfound' ? '<span style="color:var(--text3)">—</span>' : `<input type="checkbox" class="cb" ${r.checked ? 'checked' : ''} onchange="resultados[${i}].checked=this.checked;updateSelectionCounter()">`}</td>
       <td class="td-badge">${estadoBadge}</td>
       <td class="td-badge">${matchBadge}</td>
       <td class="td-ean">${r.eanDisplay || '—'}</td>
@@ -600,20 +675,14 @@ function renderTableRows() {
     `;
     tbody.appendChild(tr);
   });
+
+  updateSelectionCounter();
 }
 
+// FIX: setFiltro now re-renders stats to update active state correctly
 function setFiltro(f) {
   filtroActual = filtroActual === f ? null : f;
-  document.querySelectorAll('.stat-pill').forEach(p => p.classList.remove('active'));
-  if (filtroActual) {
-    const pills = document.querySelectorAll('.stat-pill');
-    pills.forEach(p => {
-      if (p.classList.contains(filtroActual) || (filtroActual === null && p.textContent.includes('Todos'))) {
-        p.classList.add('active');
-      }
-    });
-  }
-  renderTableRows();
+  renderReview();
 }
 
 function filtrarTabla() { renderTableRows(); }
@@ -641,6 +710,7 @@ function recalcularMargenes() {
     }
   });
   renderTableRows();
+  toast('Márgenes recalculados', 'success');
 }
 
 // ===== RENDER EXPORT =====
@@ -655,25 +725,28 @@ function renderExport() {
   }
 
   const selected = resultados.filter(r => r.checked && r.estado !== 'notfound');
-  document.getElementById('exportInfo').textContent = `Se exportarán ${selected.length} productos (solo los matcheados y seleccionados). Los productos de otros proveedores no se tocan.`;
+  document.getElementById('exportInfo').textContent = `Se exportarán ${selected.length} productos (solo los matcheados y seleccionados).`;
 }
 
-// ===== EXPORT INTERNO =====
-function exportarInterno() {
+// ===== EXPORT INTERNO (now with confirm dialog) =====
+async function exportarInterno() {
   const selected = resultados.filter(r => r.checked && r.estado !== 'notfound');
-  if (selected.length === 0) { alert('No hay productos seleccionados para exportar.'); return; }
+  if (selected.length === 0) {
+    toast('No hay productos seleccionados para exportar.', 'warning');
+    return;
+  }
+
+  const ok = await showConfirm('Exportar Excel Interno', `Se van a exportar ${selected.length} productos. ¿Continuar?`);
+  if (!ok) return;
 
   const mPrecioCol = maestroColumns[document.getElementById('selMaestroPrecio').value];
 
-  // Build rows preserving original column order
   const exportRows = selected.map(r => {
     const row = {};
-    // Copy all original columns in order
     maestroColumnOrder.forEach(col => {
       row[col] = r.maestroRow[col];
     });
 
-    // Update the target price column
     if (tipoProducto === 'libros') {
       const lista1Col = findLista1Col();
       if (lista1Col) row[lista1Col] = r.precioNuevo;
@@ -681,7 +754,6 @@ function exportarInterno() {
       row[mPrecioCol] = r.precioNuevo;
     }
 
-    // Add audit columns at end
     row['_PrecioAnterior'] = r.precioAnterior;
     row['_PrecioNuevo'] = r.precioNuevo;
     row['_Variacion%'] = r.variacion;
@@ -692,13 +764,13 @@ function exportarInterno() {
     return row;
   });
 
-  // Ensure column order
   const headers = [...maestroColumnOrder, '_PrecioAnterior', '_PrecioNuevo', '_Variacion%', '_Estado', '_Match', '_Fecha'];
 
   const ws = XLSX.utils.json_to_sheet(exportRows, { header: headers });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Actualización');
   XLSX.writeFile(wb, `PriceSync_Interno_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  toast(`Excel exportado con ${selected.length} productos`, 'success');
 }
 
 // ===== TIENDA NUBE — 2-FILE FLOW =====
@@ -724,7 +796,6 @@ function onGestionFile(file, direct) {
     document.getElementById('dzGestion' + suffix + 'File').textContent = `✓ ${file.name} — ${gestionData.length} productos`;
     document.getElementById('gestionFields' + suffix).style.display = 'grid';
 
-    // Autodetect columns
     const eanIdx = autoDetectColumn(gestionColumns, ['codigo', 'ean', 'barras', 'isbn', 'upc', 'código', 'codbar'], true);
     const descIdx = autoDetectColumn(gestionColumns, ['descripcion', 'descripción', 'nombre', 'producto', 'detalle', 'articulo']);
     const pvpIdx = autoDetectColumn(gestionColumns, ['lista1', 'pvp', 'precio venta', 'precio_venta', 'precio publico', 'precio']);
@@ -734,6 +805,7 @@ function onGestionFile(file, direct) {
     populateSelect('selGestionPVP' + suffix, gestionColumns, pvpIdx);
 
     checkTNReady(direct);
+    toast('Archivo de gestión cargado', 'success');
   };
   reader.readAsArrayBuffer(file);
 }
@@ -744,12 +816,11 @@ function onTNFile(file, direct) {
   reader.onload = function (e) {
     tnRawText = e.target.result;
 
-    // Detect separator
     const firstLine = tnRawText.split('\n')[0];
     tnSep = (firstLine.split(';').length > firstLine.split(',').length) ? ';' : ',';
 
     tnRows = parseCSV(tnRawText, tnSep);
-    if (tnRows.length < 2) { alert('El archivo parece vacío.'); return; }
+    if (tnRows.length < 2) { toast('El archivo parece vacío.', 'error'); return; }
     tnHeaders = tnRows[0];
 
     const suffix = direct ? 'Direct' : '';
@@ -757,6 +828,7 @@ function onTNFile(file, direct) {
     document.getElementById('dzTN' + suffix + 'File').textContent = `✓ ${file.name} — ${tnRows.length - 1} productos`;
 
     checkTNReady(direct);
+    toast('CSV de Tienda Nube cargado', 'success');
   };
   reader.readAsText(file, 'iso-8859-1');
 }
@@ -772,7 +844,7 @@ function generarTiendaNube(direct) {
   const gDescCol = gestionColumns[document.getElementById('selGestionDesc' + suffix).value];
   const gPvpCol = gestionColumns[document.getElementById('selGestionPVP' + suffix).value];
 
-  // Build lookup: EAN → {pvp, desc} from gestión file
+  // Build lookup maps
   const pvpByEAN = new Map();
   const gestionByDesc = new Map();
   const gestionByDescCompact = new Map();
@@ -809,11 +881,10 @@ function generarTiendaNube(direct) {
   });
 
   if (precioIdx === -1) {
-    alert('No se encontró la columna "Precio" en el CSV de Tienda Nube.');
+    toast('No se encontró la columna "Precio" en el CSV de Tienda Nube.', 'error');
     return;
   }
 
-  // Process: copy all rows, update Precio where matched
   tnUpdatedRows = [tnHeaders];
   let matchCount = 0;
   let previewRows = [];
@@ -892,7 +963,7 @@ function generarTiendaNube(direct) {
         }
       }
 
-      // 2d: Fuzzy (combined similarity)
+      // 2d: Fuzzy (FIX: now works — combinedSimilarity is defined above)
       if (newPVP === null && tnDescNorm) {
         let bestSim = 0, bestEntry = null;
         for (const entry of gestionDescList) {
@@ -934,15 +1005,14 @@ function generarTiendaNube(direct) {
   // Show preview
   document.getElementById('tnPreview' + suffix).style.display = 'block';
 
-  // Stats with match type breakdown
+  // Stats
   let statsHTML = `
     <div class="stats-bar">
-      <div class="stat-pill up">✎ ${matchCount} precios modificados</div>
+      <div class="stat-pill up">✎ ${matchCount} modificados</div>
       <div class="stat-pill same">— ${tnRows.length - 1 - matchCount} sin cambio</div>
-      <div class="stat-pill" style="background:var(--accent-bg);color:var(--accent2)">${tnRows.length - 1} total en CSV</div>
+      <div class="stat-pill" style="background:var(--accent-bg);color:var(--accent2)">${tnRows.length - 1} total</div>
     </div>`;
   if (matchCount > 0) {
-    // Count barcode mismatches
     const eanMismatches = previewRows.filter(p => p.matchType !== 'ean' && p.matchGestionEAN && p.tnEAN && p.tnEAN.length >= 8 && p.tnEAN !== p.matchGestionEAN).length;
     const eanMissing = previewRows.filter(p => p.matchType !== 'ean' && p.matchGestionEAN && (!p.tnEAN || p.tnEAN.length < 8)).length;
 
@@ -980,26 +1050,21 @@ function generarTiendaNube(direct) {
         desc_contains: 'CONTIENE',
         desc_fuzzy: '⚠ SIMILAR'
       };
-      const badge = `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;${badgeColors[p.matchType]}">${badgeLabels[p.matchType]}</span>`;
-
-      // Show description match info
+      const badge = `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;${badgeColors[p.matchType]}">${badgeLabels[p.matchType]}</span>`;
       const descExtra = p.matchType !== 'ean' && p.matchDesc ? `<br><span style="font-size:11px;color:var(--text3)">→ ${p.matchDesc}</span>` : '';
 
-      // Show barcode mismatch warning when matched by name
       let eanWarning = '';
       if (p.matchType !== 'ean' && p.matchGestionEAN) {
         const tnHasEAN = p.tnEAN && p.tnEAN.length >= 8;
         if (tnHasEAN && p.tnEAN !== p.matchGestionEAN) {
-          // Both have barcodes but they're different
           eanWarning = `<br><span style="font-size:11px;color:var(--orange);font-weight:600">⚠ EAN diferente — TN: ${p.ean || '(vacío)'} vs Gestión: ${p.matchGestionEAN}</span>`;
         } else if (!tnHasEAN) {
-          // TN has no barcode, gestión does
           eanWarning = `<br><span style="font-size:11px;color:var(--blue)">ℹ Sin EAN en TN — Gestión: ${p.matchGestionEAN}</span>`;
         }
       }
 
       tr.innerHTML = `
-        <td style="font-family:'Space Mono',monospace;font-size:12px">${p.ean || '<span style="color:var(--text3)">—</span>'}</td>
+        <td style="font-family:'Space Mono',monospace;font-size:11px">${p.ean || '<span style="color:var(--text3)">—</span>'}</td>
         <td style="max-width:300px">${p.nombre}${descExtra}${eanWarning}</td>
         <td>${badge}</td>
         <td class="price-change price-same">$${p.oldPrecio}</td>
@@ -1010,8 +1075,8 @@ function generarTiendaNube(direct) {
     });
   }
 
-  // Scroll to preview
   document.getElementById('tnPreview' + suffix).scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast(`${matchCount} precios actualizados en Tienda Nube`, 'success');
 }
 
 function formatTNPrice(num) {
@@ -1019,41 +1084,6 @@ function formatTNPrice(num) {
   const parts = num.toFixed(2).split('.');
   const intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   return intPart + '.' + parts[1];
-}
-
-// Smart price parser: handles "72,900.00" (comma=thousands) and "1234,56" (comma=decimal)
-function parsePrice(val) {
-  if (val == null) return 0;
-  let s = String(val).replace(/[^0-9.,]/g, '');
-  if (!s) return 0;
-  // If both comma and dot exist: determine which is thousands vs decimal
-  const hasComma = s.includes(',');
-  const hasDot = s.includes('.');
-  if (hasComma && hasDot) {
-    // "72,900.00" → comma is thousands (comes before dot)
-    // "72.900,00" → dot is thousands (comes before comma)
-    const lastComma = s.lastIndexOf(',');
-    const lastDot = s.lastIndexOf('.');
-    if (lastComma > lastDot) {
-      // comma is decimal: "72.900,00" → remove dots, replace comma with dot
-      s = s.replace(/\./g, '').replace(',', '.');
-    } else {
-      // dot is decimal: "72,900.00" → remove commas
-      s = s.replace(/,/g, '');
-    }
-  } else if (hasComma) {
-    // Only comma: could be thousands ("72,900") or decimal ("1234,56")
-    // If comma is followed by exactly 2 digits at end → decimal
-    const match = s.match(/,(\d+)$/);
-    if (match && match[1].length === 2) {
-      s = s.replace(',', '.');
-    } else {
-      // Thousands separator: remove it
-      s = s.replace(/,/g, '');
-    }
-  }
-  // hasDot only → standard format, parse directly
-  return parseFloat(s) || 0;
 }
 
 function parseCSV(text, sep) {
@@ -1107,14 +1137,14 @@ function escapeCSVField(val, sep) {
   return s;
 }
 
-function descargarTiendaNube() {
-  if (tnUpdatedRows.length < 2) { alert('No hay datos para exportar.'); return; }
+// FIX: descargarTiendaNube now accepts `direct` param (was ignored before)
+function descargarTiendaNube(direct) {
+  if (tnUpdatedRows.length < 2) { toast('No hay datos para exportar.', 'warning'); return; }
 
   const csvContent = tnUpdatedRows.map(row =>
     row.map(cell => escapeCSVField(cell, tnSep)).join(tnSep)
   ).join('\r\n');
 
-  // UTF-8 BOM for compatibility
   const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
   const encoded = new TextEncoder().encode(csvContent);
   const blob = new Blob([bom, encoded], { type: 'text/csv;charset=utf-8' });
@@ -1125,6 +1155,7 @@ function descargarTiendaNube() {
   a.download = `TiendaNube_Actualizado_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+  toast('CSV de Tienda Nube descargado', 'success');
 }
 
 // ===== DIAGNOSTICO =====
@@ -1149,7 +1180,6 @@ function mostrarDiagnostico() {
     info += `  [${i}] raw: ${JSON.stringify(raw)} (${typeof raw}) → norm: ${norm}\n`;
   });
 
-  // Test first match
   const firstProvEAN = normEAN(provData[0]?.[pEanCol]);
   const found = maestroData.some(r => normEAN(r[mEanCol]) === firstProvEAN);
   info += `\nTEST: Primer EAN proveedor "${firstProvEAN}" → ${found ? '✓ ENCONTRADO' : '✗ NO ENCONTRADO'} en maestro`;
