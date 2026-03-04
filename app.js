@@ -50,14 +50,6 @@ function normDesc(val) {
     .trim();
 }
 
-function jaccardSimilarity(a, b) {
-  const setA = new Set(normDesc(a).split(' ').filter(w => w.length > 2));
-  const setB = new Set(normDesc(b).split(' ').filter(w => w.length > 2));
-  if (setA.size === 0 || setB.size === 0) return 0;
-  let inter = 0;
-  for (const w of setA) if (setB.has(w)) inter++;
-  return inter / (setA.size + setB.size - inter);
-}
 
 // Compact normalization: remove ALL spaces (catches "Fonoloco" vs "FONO LOCO")
 function normDescCompact(val) {
@@ -68,37 +60,6 @@ function normDescCompact(val) {
     .trim();
 }
 
-// Combined similarity: max of Jaccard words + compact string similarity
-function combinedSimilarity(a, b) {
-  const jaccard = jaccardSimilarity(a, b);
-
-  // Also check compact (no-space) containment
-  const compA = normDescCompact(a);
-  const compB = normDescCompact(b);
-  let compactScore = 0;
-  if (compA && compB) {
-    if (compA === compB) {
-      compactScore = 1;
-    } else if (compA.includes(compB) || compB.includes(compA)) {
-      const shorter = Math.min(compA.length, compB.length);
-      const longer = Math.max(compA.length, compB.length);
-      compactScore = shorter / longer;
-    } else {
-      // Levenshtein-like: count common character bigrams
-      const bigramsA = new Set();
-      for (let i = 0; i < compA.length - 1; i++) bigramsA.add(compA.slice(i, i + 2));
-      const bigramsB = new Set();
-      for (let i = 0; i < compB.length - 1; i++) bigramsB.add(compB.slice(i, i + 2));
-      if (bigramsA.size > 0 && bigramsB.size > 0) {
-        let common = 0;
-        for (const bg of bigramsA) if (bigramsB.has(bg)) common++;
-        compactScore = (2 * common) / (bigramsA.size + bigramsB.size);
-      }
-    }
-  }
-
-  return Math.max(jaccard, compactScore);
-}
 
 function readExcelBuffer(buffer, fileName, headerRow, sheetName) {
   const isXLS = /\.xls$/i.test(fileName) && !/\.xlsx$/i.test(fileName);
@@ -251,7 +212,7 @@ function onMaestroFile(file) {
 
       populateSelect('selMaestroEAN', maestroColumns, eanIdx);
       populateSelect('selMaestroDesc', maestroColumns, descIdx);
-      populateSelect('selMaestroPrecio', maestroColumns, descIdx);
+      populateSelect('selMaestroPrecio', maestroColumns, precioIdx);
       populateSelect('selMaestroCodInt', maestroColumns, codIntIdx);
 
       checkReady();
@@ -417,16 +378,9 @@ function procesar() {
       }
     }
 
-    // Matching in 4 levels:
-    // 1) EAN (only if provider has barcodes)
-    // 2) Exact description
-    // 3) Containment (one name inside the other)
-    // 4) Fuzzy (combined similarity)
-    // For libros: stricter thresholds to avoid false positives with short titles
-    const isLibros = tipoProducto === 'libros';
-    const containThreshold = isLibros ? 0.65 : 0.4;
-    const fuzzyThreshold = isLibros ? 0.55 : 0.35;
-    const minDescLen = isLibros ? 8 : 3; // Avoid matching very short titles like "LUGAR"
+    // Matching en 2 niveles estrictos:
+    // 1) EAN (código de barras)
+    // 2) Descripción exacta
 
     let mIdx = -1;
     let matchType = 'notfound';
@@ -438,8 +392,8 @@ function procesar() {
       matchType = 'ean';
     }
 
-    // Step 2: Exact description (Skip for books per user request => strict EAN only)
-    if (mIdx < 0 && !isLibros) {
+    // Step 2: Exact description
+    if (mIdx < 0) {
       const pDescNorm = normDesc(pDesc);
       const pDescCompact = normDescCompact(pDesc);
 
@@ -453,52 +407,6 @@ function procesar() {
       if (mIdx < 0 && pDescCompact && maestroByDescCompact.has(pDescCompact)) {
         mIdx = maestroByDescCompact.get(pDescCompact);
         matchType = 'desc_exact';
-      }
-
-      // Step 3: Containment — one name contains the other (with and without spaces)
-      if (mIdx < 0 && pDescNorm && pDescNorm.length >= minDescLen) {
-        for (const entry of maestroDescList) {
-          if (entry.desc.length < minDescLen) continue;
-          // Normal containment
-          if (entry.desc.includes(pDescNorm) || pDescNorm.includes(entry.desc)) {
-            const shorter = Math.min(entry.desc.length, pDescNorm.length);
-            const longer = Math.max(entry.desc.length, pDescNorm.length);
-            if (shorter / longer >= containThreshold) {
-              mIdx = entry.idx;
-              matchType = 'desc_contains';
-              fuzzySim = Math.round((shorter / longer) * 100);
-              break;
-            }
-          }
-          // Compact containment (no spaces)
-          if (mIdx < 0 && pDescCompact && entry.descCompact) {
-            if (entry.descCompact.length < minDescLen) continue;
-            if (entry.descCompact.includes(pDescCompact) || pDescCompact.includes(entry.descCompact)) {
-              const shorter = Math.min(entry.descCompact.length, pDescCompact.length);
-              const longer = Math.max(entry.descCompact.length, pDescCompact.length);
-              if (shorter / longer >= containThreshold) {
-                mIdx = entry.idx;
-                matchType = 'desc_contains';
-                fuzzySim = Math.round((shorter / longer) * 100);
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      // Step 4: Combined fuzzy (Jaccard words + compact bigrams)
-      if (mIdx < 0 && pDescNorm && pDescNorm.length >= minDescLen) {
-        let bestSim = 0, bestIdx = -1;
-        maestroData.forEach((mRow, i) => {
-          const sim = combinedSimilarity(mRow[mDescCol], pDesc);
-          if (sim > bestSim) { bestSim = sim; bestIdx = i; }
-        });
-        if (bestSim >= fuzzyThreshold) {
-          mIdx = bestIdx;
-          matchType = 'desc_fuzzy';
-          fuzzySim = bestSim;
-        }
       }
     }
 
@@ -614,11 +522,10 @@ function renderReview() {
   banner.innerHTML = bannerHTML;
 
   // Stats
-  const counts = { up: 0, down: 0, same: 0, notfound: 0, fuzzy: 0 };
+  const counts = { up: 0, down: 0, same: 0, notfound: 0 };
   resultados.forEach(r => {
     if (r.estado !== 'notfound') counts[r.estado]++;
     else counts.notfound++;
-    if (r.matchType === 'desc_fuzzy' || r.matchType === 'desc_contains') counts.fuzzy++;
   });
 
   const statsBar = document.getElementById('statsBar');
@@ -626,10 +533,10 @@ function renderReview() {
     <div class="stat-pill up" onclick="setFiltro('up')">▲ ${counts.up} subieron</div>
     <div class="stat-pill down" onclick="setFiltro('down')">▼ ${counts.down} bajaron</div>
     <div class="stat-pill same" onclick="setFiltro('same')">= ${counts.same} sin cambio</div>
-    ${counts.fuzzy > 0 ? `<div class="stat-pill fuzzy" onclick="setFiltro('fuzzy')">⚠ ${counts.fuzzy} fuzzy (revisar)</div>` : ''}
     <div class="stat-pill notfound" onclick="setFiltro('notfound')">✗ ${counts.notfound} sin match</div>
     <div class="stat-pill" style="background:var(--accent-bg);color:var(--accent2)" onclick="setFiltro(null)">Todos (${resultados.length})</div>
   `;
+
 
   // Table header
   document.getElementById('reviewHead').innerHTML = `<tr>
@@ -654,20 +561,18 @@ function renderTableRows() {
 
   resultados.forEach((r, i) => {
     // Filter
-    if (filtroActual === 'fuzzy' && r.matchType !== 'desc_fuzzy' && r.matchType !== 'desc_contains') return;
-    if (filtroActual && filtroActual !== 'fuzzy' && r.estado !== filtroActual) return;
+    // Filter
+    if (filtroActual && r.estado !== filtroActual) return;
     if (search) {
       const s = `${r.ean} ${r.descMaestro} ${r.descProv} ${r.codInt}`.toLowerCase();
       if (!s.includes(search)) return;
     }
 
-    const rowClass = (r.matchType === 'desc_fuzzy' || r.matchType === 'desc_contains') ? 'row-fuzzy' : (r.estado === 'notfound' ? 'row-notfound' : '');
+    const rowClass = r.estado === 'notfound' ? 'row-notfound' : '';
 
     let matchBadge = '';
     if (r.matchType === 'ean') matchBadge = '<span class="badge badge-ean">EAN</span>';
     else if (r.matchType === 'desc_exact') matchBadge = '<span class="badge badge-desc">DESC. EXACTA</span>';
-    else if (r.matchType === 'desc_contains') matchBadge = `<span class="badge badge-desc">CONTIENE ${r.fuzzySim}%</span>`;
-    else if (r.matchType === 'desc_fuzzy') matchBadge = `<span class="badge badge-fuzzy">⚠ SIMILITUD ${r.fuzzySim}%</span>`;
     else matchBadge = '<span class="badge badge-notfound">SIN MATCH</span>';
 
     let estadoBadge = '';
@@ -678,9 +583,7 @@ function renderTableRows() {
 
     const priceClass = r.estado === 'up' ? 'price-up' : (r.estado === 'down' ? 'price-down' : 'price-same');
 
-    const desc = (r.matchType === 'desc_fuzzy' || r.matchType === 'desc_contains')
-      ? `<strong>${r.descMaestro}</strong><br><span style="color:var(--text3);font-size:11px">Prov: ${r.descProv}</span>`
-      : (r.descMaestro || r.descProv);
+    const desc = r.descMaestro || r.descProv;
 
     const tr = document.createElement('tr');
     tr.className = rowClass;
@@ -760,48 +663,22 @@ function exportarInterno() {
   const selected = resultados.filter(r => r.checked && r.estado !== 'notfound');
   if (selected.length === 0) { alert('No hay productos seleccionados para exportar.'); return; }
 
-  // The strict headers requested by the user
-  const headers = [
-    'codigo',
-    'rubro',
-    'descripcion',
-    'marca',
-    'precio de compra',
-    'lista 1',
-    'stock',
-    'stock minimo',
-    'alicuotaIva',
-    'CodigoProv'
-  ];
+  const mPrecioCol = maestroColumns[document.getElementById('selMaestroPrecio').value];
 
-  // Helper function to find data from the old row regardless of exact case
-  const getColData = (rowObj, colKeyword) => {
-    const key = Object.keys(rowObj).find(k => k.toLowerCase() === colKeyword.toLowerCase());
-    return key ? rowObj[key] : '';
-  };
-
+  // Build rows preserving original column order
   const exportRows = selected.map(r => {
     const row = {};
-
-    // Map existing data to the new strict headers if they existed in the original file
-    headers.forEach(h => {
-      // Special handlings for slightly different common naming
-      let val = '';
-      if (h === 'codigo' && getColData(r.maestroRow, 'barras')) val = getColData(r.maestroRow, 'barras');
-      if (h === 'lista 1' && getColData(r.maestroRow, 'lista1')) val = getColData(r.maestroRow, 'lista1');
-      if (h === 'precio de compra' && getColData(r.maestroRow, 'costo')) val = getColData(r.maestroRow, 'costo');
-
-      // Default generic fallback
-      if (!val) val = getColData(r.maestroRow, h);
-
-      row[h] = val;
+    // Copy all original columns in order
+    maestroColumnOrder.forEach(col => {
+      row[col] = r.maestroRow[col];
     });
 
-    // Update the crucial target price column directly
+    // Update the target price column
     if (tipoProducto === 'libros') {
-      row['lista 1'] = r.precioNuevo;
+      const lista1Col = findLista1Col();
+      if (lista1Col) row[lista1Col] = r.precioNuevo;
     } else {
-      row['precio de compra'] = r.precioNuevo;
+      row[mPrecioCol] = r.precioNuevo;
     }
 
     // Add audit columns at end
@@ -815,9 +692,10 @@ function exportarInterno() {
     return row;
   });
 
-  const finalHeaders = [...headers, '_PrecioAnterior', '_PrecioNuevo', '_Variacion%', '_Estado', '_Match', '_Fecha'];
+  // Ensure column order
+  const headers = [...maestroColumnOrder, '_PrecioAnterior', '_PrecioNuevo', '_Variacion%', '_Estado', '_Match', '_Fecha'];
 
-  const ws = XLSX.utils.json_to_sheet(exportRows, { header: finalHeaders });
+  const ws = XLSX.utils.json_to_sheet(exportRows, { header: headers });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Actualización');
   XLSX.writeFile(wb, `PriceSync_Interno_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -831,8 +709,6 @@ let tnRows = [];
 let tnHeaders = [];
 let tnSep = ';';
 let tnUpdatedRows = [];
-let currentTNPreview = [];
-let currentTNSuffix = '';
 
 function onGestionFile(file, direct) {
   if (!file) return;
@@ -962,9 +838,7 @@ function generarTiendaNube(direct) {
       matchGestionEAN = ean;
     }
 
-    const isLibros = tipoProducto === 'libros';
-
-    // Step 2: Match by exact name (fallback for missing or corrupted EANs)
+    // Step 2: Match by name (fallback)
     if (newPVP === null && tnNombre) {
       const tnDescNorm = normDesc(tnNombre);
       const tnDescCompact = normDescCompact(tnNombre);
@@ -986,21 +860,67 @@ function generarTiendaNube(direct) {
         matchDesc = m.desc;
         matchGestionEAN = m.ean || '';
       }
+
+      // 2c: Containment
+      if (newPVP === null && tnDescNorm && tnDescNorm.length >= 3) {
+        for (const entry of gestionDescList) {
+          if (entry.descNorm.includes(tnDescNorm) || tnDescNorm.includes(entry.descNorm)) {
+            const shorter = Math.min(entry.descNorm.length, tnDescNorm.length);
+            const longer = Math.max(entry.descNorm.length, tnDescNorm.length);
+            if (shorter / longer >= 0.4) {
+              newPVP = entry.pvp;
+              matchType = 'desc_contains';
+              matchDesc = entry.desc;
+              matchGestionEAN = entry.ean || '';
+              break;
+            }
+          }
+          // Compact containment
+          if (tnDescCompact && entry.descCompact) {
+            if (entry.descCompact.includes(tnDescCompact) || tnDescCompact.includes(entry.descCompact)) {
+              const shorter = Math.min(entry.descCompact.length, tnDescCompact.length);
+              const longer = Math.max(entry.descCompact.length, tnDescCompact.length);
+              if (shorter / longer >= 0.4) {
+                newPVP = entry.pvp;
+                matchType = 'desc_contains';
+                matchDesc = entry.desc;
+                matchGestionEAN = entry.ean || '';
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // 2d: Fuzzy (combined similarity)
+      if (newPVP === null && tnDescNorm) {
+        let bestSim = 0, bestEntry = null;
+        for (const entry of gestionDescList) {
+          const sim = combinedSimilarity(tnNombre, entry.desc);
+          if (sim > bestSim) { bestSim = sim; bestEntry = entry; }
+        }
+        if (bestSim >= 0.40 && bestEntry) {
+          newPVP = bestEntry.pvp;
+          matchType = 'desc_fuzzy';
+          matchDesc = bestEntry.desc;
+          matchGestionEAN = bestEntry.ean || '';
+        }
+      }
     }
+
     // Update price if matched and price changed
     if (newPVP !== null) {
       const oldPrecio = row[precioIdx];
       const oldPrecioNum = parsePrice(oldPrecio);
       if (Math.abs(oldPrecioNum - newPVP) > 0.01) {
+        row[precioIdx] = formatTNPrice(newPVP);
         matchCount++;
         statsByType[matchType] = (statsByType[matchType] || 0) + 1;
         previewRows.push({
-          rowIdx: i,
-          checked: true,
           ean: barCodeIdx >= 0 ? row[barCodeIdx] : '',
           nombre: tnNombre,
           oldPrecio,
-          newPrecio: formatTNPrice(newPVP),
+          newPrecio: row[precioIdx],
           matchType,
           matchDesc,
           matchGestionEAN,
@@ -1008,10 +928,8 @@ function generarTiendaNube(direct) {
         });
       }
     }
+    tnUpdatedRows.push(row);
   }
-
-  currentTNPreview = previewRows;
-  currentTNSuffix = suffix;
 
   // Show preview
   document.getElementById('tnPreview' + suffix).style.display = 'block';
@@ -1046,9 +964,9 @@ function generarTiendaNube(direct) {
   const tbody = document.getElementById('tnBody' + suffix);
   tbody.innerHTML = '';
   if (previewRows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:24px">No se encontraron precios diferentes para actualizar</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">No se encontraron precios diferentes para actualizar</td></tr>';
   } else {
-    previewRows.forEach((p, index) => {
+    previewRows.forEach(p => {
       const tr = document.createElement('tr');
       const badgeColors = {
         ean: 'background:var(--green-bg);color:var(--green)',
@@ -1072,14 +990,15 @@ function generarTiendaNube(direct) {
       if (p.matchType !== 'ean' && p.matchGestionEAN) {
         const tnHasEAN = p.tnEAN && p.tnEAN.length >= 8;
         if (tnHasEAN && p.tnEAN !== p.matchGestionEAN) {
+          // Both have barcodes but they're different
           eanWarning = `<br><span style="font-size:11px;color:var(--orange);font-weight:600">⚠ EAN diferente — TN: ${p.ean || '(vacío)'} vs Gestión: ${p.matchGestionEAN}</span>`;
         } else if (!tnHasEAN) {
+          // TN has no barcode, gestión does
           eanWarning = `<br><span style="font-size:11px;color:var(--blue)">ℹ Sin EAN en TN — Gestión: ${p.matchGestionEAN}</span>`;
         }
       }
 
       tr.innerHTML = `
-        <td class="td-cb"><input type="checkbox" class="cb" checked onchange="currentTNPreview[${index}].checked=this.checked"></td>
         <td style="font-family:'Space Mono',monospace;font-size:12px">${p.ean || '<span style="color:var(--text3)">—</span>'}</td>
         <td style="max-width:300px">${p.nombre}${descExtra}${eanWarning}</td>
         <td>${badge}</td>
@@ -1188,69 +1107,8 @@ function escapeCSVField(val, sep) {
   return s;
 }
 
-function toggleAllTN(checked, direct) {
-  const suffix = direct ? 'Direct' : '';
-  const tbody = document.getElementById('tnBody' + suffix);
-  if (!tbody) return;
-  const cbs = tbody.querySelectorAll('.cb');
-  cbs.forEach(cb => cb.checked = checked);
-  currentTNPreview.forEach(p => p.checked = checked);
-}
-
 function descargarTiendaNube() {
-  if (tnRows.length < 2) { alert('No hay datos originales de Tienda Nube cargados.'); return; }
-
-  const checkedUpdates = new Map();
-  let fixBarcodeCount = 0;
-
-  currentTNPreview.forEach(p => {
-    if (p.checked) {
-      let eanToFix = null;
-      // If we have a valid EAN from gestión
-      if (p.matchGestionEAN) {
-        const tnHasEAN = p.tnEAN && p.tnEAN.length >= 8;
-        const isSci = p.tnEAN && p.tnEAN.toUpperCase().includes('E');
-        // Fix if missing, too short, scientific notation, or just different
-        if (!tnHasEAN || isSci || p.tnEAN !== p.matchGestionEAN) {
-          eanToFix = p.matchGestionEAN;
-          fixBarcodeCount++;
-        }
-      }
-      checkedUpdates.set(p.rowIdx, { precio: p.newPrecio, newEan: eanToFix });
-    }
-  });
-
-  if (checkedUpdates.size === 0) {
-    alert('No hay productos seleccionados para exportar cambios.');
-    return;
-  }
-
-  const precioIdx = tnHeaders.findIndex(h => {
-    const l = h.toLowerCase().replace(/[""]/g, '').trim();
-    return l === 'precio';
-  });
-
-  const barCodeIdx = tnHeaders.findIndex(h => {
-    const l = h.toLowerCase().replace(/[""]/g, '').trim();
-    return l.includes('código de barras') || l.includes('codigo de barras') || l === 'barcode';
-  });
-
-  tnUpdatedRows = [tnHeaders];
-  for (let i = 1; i < tnRows.length; i++) {
-    const row = [...tnRows[i]];
-    while (row.length < tnHeaders.length) row.push('');
-
-    if (checkedUpdates.has(i)) {
-      const update = checkedUpdates.get(i);
-      row[precioIdx] = update.precio;
-
-      // Auto-fix the barcode if needed
-      if (barCodeIdx >= 0 && update.newEan) {
-        row[barCodeIdx] = update.newEan;
-      }
-    }
-    tnUpdatedRows.push(row);
-  }
+  if (tnUpdatedRows.length < 2) { alert('No hay datos para exportar.'); return; }
 
   const csvContent = tnUpdatedRows.map(row =>
     row.map(cell => escapeCSVField(cell, tnSep)).join(tnSep)
