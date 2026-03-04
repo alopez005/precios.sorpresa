@@ -137,7 +137,7 @@ function combinedSimilarity(a, b) {
   return levSim * 0.4 + tokSim * 0.6;
 }
 
-// ===== PRICE PARSER (CORREGIDO PARA ARGENTINA) =====
+// ===== PRICE PARSER =====
 function parsePrice(val) {
   if (val == null) return 0;
   if (typeof val === 'number') return val;
@@ -147,39 +147,34 @@ function parsePrice(val) {
   const hasComma = s.includes(',');
   const hasDot = s.includes('.');
 
-  // Caso 1: Tiene punto y coma (ej: 1.500,50 o 1,500.50)
   if (hasComma && hasDot) {
     const lastComma = s.lastIndexOf(',');
     const lastDot = s.lastIndexOf('.');
     if (lastComma > lastDot) {
-      s = s.replace(/\./g, '').replace(',', '.'); // 1.500,50 -> 1500.50
+      s = s.replace(/\./g, '').replace(',', '.');
     } else {
-      s = s.replace(/,/g, ''); // 1,500.50 -> 1500.50
+      s = s.replace(/,/g, '');
     }
   } 
-  // Caso 2: Solo tiene coma (ej: 9500,50 o 9,500)
   else if (hasComma) {
     const match = s.match(/,(\d+)$/);
     if (match && match[1].length === 3) {
-      s = s.replace(/,/g, ''); // 9,500 -> 9500
+      s = s.replace(/,/g, ''); 
     } else {
-      s = s.replace(',', '.'); // 9500,50 -> 9500.50
+      s = s.replace(',', '.');
     }
   } 
-  // Caso 3: Solo tiene punto (AQUÍ ESTABA EL BUG DE 9.500 -> 9.5)
   else if (hasDot) {
     const match = s.match(/\.(\d+)$/);
-    // Si tiene exactamente 3 dígitos después del punto, en AR es separador de miles.
     if (match && match[1].length === 3) {
-      s = s.replace(/\./g, ''); // 9.500 -> 9500
+      s = s.replace(/\./g, '');
     }
-    // Si no tiene 3 dígitos (ej: 9.50), se deja el punto y parseFloat lo maneja perfecto.
   }
   
   return parseFloat(s) || 0;
 }
 
-// ===== EXCEL READING =====
+// ===== EXCEL READING (CORREGIDO PARA EVITAR QUE ROMPA CSVs LOCALES) =====
 function readExcelBuffer(buffer, fileName, headerRow, sheetName) {
   const isXLS = /\.xls$/i.test(fileName) && !/\.xlsx$/i.test(fileName);
   let wb;
@@ -187,9 +182,10 @@ function readExcelBuffer(buffer, fileName, headerRow, sheetName) {
     const data = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]);
-    wb = XLSX.read(binary, { type: 'binary' });
+    // raw: true previene la lectura incorrecta de CSVs
+    wb = XLSX.read(binary, { type: 'binary', raw: true });
   } else {
-    wb = XLSX.read(buffer, { type: 'array' });
+    wb = XLSX.read(buffer, { type: 'array', raw: true });
   }
   const wsName = sheetName || wb.SheetNames[0];
   const ws = wb.Sheets[wsName];
@@ -224,9 +220,9 @@ function getSheetNames(buffer, fileName) {
     const data = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]);
-    wb = XLSX.read(binary, { type: 'binary' });
+    wb = XLSX.read(binary, { type: 'binary', raw: true });
   } else {
-    wb = XLSX.read(buffer, { type: 'array' });
+    wb = XLSX.read(buffer, { type: 'array', raw: true });
   }
   return wb.SheetNames;
 }
@@ -238,9 +234,9 @@ function autoDetectHeaderRow(buffer, fileName, sheetName) {
     const data = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]);
-    wb = XLSX.read(binary, { type: 'binary' });
+    wb = XLSX.read(binary, { type: 'binary', raw: true });
   } else {
-    wb = XLSX.read(buffer, { type: 'array' });
+    wb = XLSX.read(buffer, { type: 'array', raw: true });
   }
   const wsName = sheetName || wb.SheetNames[0];
   const ws = wb.Sheets[wsName];
@@ -733,7 +729,7 @@ function renderExport() {
   document.getElementById('exportInfo').textContent = `Se exportarán ${selected.length} productos (solo los matcheados y seleccionados).`;
 }
 
-// ===== EXPORT INTERNO =====
+// ===== EXPORT INTERNO (CORREGIDO: Tipado seguro de texto y números) =====
 async function exportarInterno() {
   const selected = resultados.filter(r => r.checked && r.estado !== 'notfound');
   if (selected.length === 0) {
@@ -745,11 +741,34 @@ async function exportarInterno() {
   if (!ok) return;
 
   const mPrecioCol = maestroColumns[document.getElementById('selMaestroPrecio').value];
+  const mEanCol = maestroColumns[document.getElementById('selMaestroEAN').value];
 
   const exportRows = selected.map(r => {
     const row = {};
     maestroColumnOrder.forEach(col => {
-      row[col] = r.maestroRow[col];
+      let val = r.maestroRow[col];
+      if (val == null) { row[col] = ''; return; }
+      
+      const colLower = col.toLowerCase();
+      
+      // 1. Proteger códigos para evitar la notación científica (7.16E+12)
+      if (col === mEanCol || colLower.includes('ean') || colLower.includes('cod') || colLower.includes('cód') || colLower.includes('barras') || colLower.includes('sku') || colLower.includes('art')) {
+        row[col] = String(val);
+      } 
+      // 2. Limpiar columnas numéricas (IVA, ganancia, otras listas) que hayan venido sucias
+      else if (typeof val === 'string' && val.trim() !== '') {
+        // Si tiene pinta de ser dinero o porcentaje (solo números, comas, puntos, signos)
+        if (/^[\d\s.,$\-%]+$/.test(val.trim())) {
+          let num = parsePrice(val);
+          row[col] = isNaN(num) ? val : num;
+        } else {
+          row[col] = val; // Es texto normal (ej: descripción del producto)
+        }
+      } 
+      // 3. Valores que ya están bien
+      else {
+        row[col] = val;
+      }
     });
 
     if (tipoProducto === 'libros') {
