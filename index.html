@@ -14,10 +14,8 @@
 
 <body>
 
-  <!-- TOAST CONTAINER -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <!-- CONFIRM DIALOG -->
   <div class="confirm-overlay" id="confirmOverlay">
     <div class="confirm-box">
       <h4 id="confirmTitle">Confirmar</h4>
@@ -29,7 +27,6 @@
     </div>
   </div>
 
-  <!-- HEADER -->
   <div class="header">
     <div class="logo">
       <div class="logo-icon">⚡</div>
@@ -52,10 +49,8 @@
       directo</button>
   </div>
 
-  <!-- MAIN -->
   <div class="main">
 
-    <!-- ========== PASO 1: CARGAR ========== -->
     <div class="panel active" id="panel1">
 
       <div class="tipo-selector">
@@ -67,7 +62,6 @@
         </div>
       </div>
 
-      <!-- Maestro -->
       <div class="card">
         <div class="card-title"><span class="icon">📁</span> Archivo Maestro (tu catálogo actual)</div>
         <div class="dropzone" id="dzMaestro">
@@ -85,7 +79,6 @@
         </div>
       </div>
 
-      <!-- Proveedor -->
       <div class="card">
         <div class="card-title"><span class="icon">📋</span> Lista del Proveedor (nuevos precios)</div>
         <div class="dropzone" id="dzProv">
@@ -110,7 +103,6 @@
         </div>
       </div>
 
-      <!-- IVA Config -->
       <div class="card" id="ivaCard">
         <div class="card-title"><span class="icon">🧾</span> Configuración de IVA</div>
         <div class="iva-row">
@@ -129,7 +121,6 @@
       </div>
     </div>
 
-    <!-- ========== PASO 2: REVISAR ========== -->
     <div class="panel" id="panel2">
       <div class="mode-banner" id="reviewBanner"></div>
 
@@ -165,7 +156,6 @@
       </div>
     </div>
 
-    <!-- ========== PASO 3: EXPORTAR ========== -->
     <div class="panel" id="panel3">
       <div class="mode-banner" id="exportBanner"></div>
       <div style="margin-bottom:20px"><p style="color:var(--text2);font-size:14px" id="exportInfo"></p></div>
@@ -228,7 +218,6 @@
       </div>
     </div>
 
-    <!-- ========== PANEL 4: TIENDA NUBE DIRECTO ========== -->
     <div class="panel" id="panel4">
       <div class="mode-banner" style="background:var(--accent-bg);color:var(--accent2);border:1px solid rgba(124,108,240,.2)">
         🛒 Modo directo — Tienda Nube
@@ -287,7 +276,6 @@
 
   </div>
 
-  <!-- DIAGNOSTIC MODAL -->
   <div class="modal-overlay" id="diagModal">
     <div class="modal">
       <h3>🔍 Diagnóstico de Códigos</h3>
