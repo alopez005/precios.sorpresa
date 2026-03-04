@@ -44,7 +44,7 @@ function setTipo(tipo) {
   document.getElementById('ivaCard').style.display = tipo === 'libros' ? 'none' : 'block';
 }
 
-// ===== DRAG & DROP (FIX: was missing in original) =====
+// ===== DRAG & DROP =====
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.dropzone').forEach(dz => {
     dz.addEventListener('dragover', e => {
@@ -100,7 +100,7 @@ function normDescCompact(val) {
     .trim();
 }
 
-// ===== SIMILARITY FUNCTIONS (FIX: were missing in original) =====
+// ===== SIMILARITY FUNCTIONS =====
 function levenshtein(a, b) {
   const m = a.length, n = b.length;
   if (m === 0) return n;
@@ -134,33 +134,48 @@ function combinedSimilarity(a, b) {
   const maxLen = Math.max(na.length, nb.length);
   const levSim = maxLen > 0 ? 1 - levenshtein(na, nb) / maxLen : 0;
   const tokSim = tokenOverlap(a, b);
-  // Weight: 40% Levenshtein, 60% token overlap
   return levSim * 0.4 + tokSim * 0.6;
 }
 
-// ===== PRICE PARSER =====
+// ===== PRICE PARSER (CORREGIDO PARA ARGENTINA) =====
 function parsePrice(val) {
   if (val == null) return 0;
-  let s = String(val).replace(/[^0-9.,]/g, '');
+  if (typeof val === 'number') return val;
+  let s = String(val).replace(/[^0-9.,\-]/g, '');
   if (!s) return 0;
+  
   const hasComma = s.includes(',');
   const hasDot = s.includes('.');
+
+  // Caso 1: Tiene punto y coma (ej: 1.500,50 o 1,500.50)
   if (hasComma && hasDot) {
     const lastComma = s.lastIndexOf(',');
     const lastDot = s.lastIndexOf('.');
     if (lastComma > lastDot) {
-      s = s.replace(/\./g, '').replace(',', '.');
+      s = s.replace(/\./g, '').replace(',', '.'); // 1.500,50 -> 1500.50
     } else {
-      s = s.replace(/,/g, '');
+      s = s.replace(/,/g, ''); // 1,500.50 -> 1500.50
     }
-  } else if (hasComma) {
+  } 
+  // Caso 2: Solo tiene coma (ej: 9500,50 o 9,500)
+  else if (hasComma) {
     const match = s.match(/,(\d+)$/);
-    if (match && match[1].length === 2) {
-      s = s.replace(',', '.');
+    if (match && match[1].length === 3) {
+      s = s.replace(/,/g, ''); // 9,500 -> 9500
     } else {
-      s = s.replace(/,/g, '');
+      s = s.replace(',', '.'); // 9500,50 -> 9500.50
     }
+  } 
+  // Caso 3: Solo tiene punto (AQUÍ ESTABA EL BUG DE 9.500 -> 9.5)
+  else if (hasDot) {
+    const match = s.match(/\.(\d+)$/);
+    // Si tiene exactamente 3 dígitos después del punto, en AR es separador de miles.
+    if (match && match[1].length === 3) {
+      s = s.replace(/\./g, ''); // 9.500 -> 9500
+    }
+    // Si no tiene 3 dígitos (ej: 9.50), se deja el punto y parseFloat lo maneja perfecto.
   }
+  
   return parseFloat(s) || 0;
 }
 
@@ -248,13 +263,11 @@ function autoDetectHeaderRow(buffer, fileName, sheetName) {
 
 function autoDetectColumn(columns, keywords, prioritizeFirst = false) {
   const kws = keywords.map(k => k.toLowerCase());
-  // Exact match first
   for (const kw of kws) {
     for (let i = 0; i < columns.length; i++) {
       if (columns[i].toLowerCase() === kw) return i;
     }
   }
-  // Partial match
   for (let i = 0; i < columns.length; i++) {
     const col = columns[i].toLowerCase();
     for (const kw of kws) {
@@ -419,7 +432,6 @@ function procesar() {
   const ivaMode = document.getElementById('selIVA').value;
   const ivaRate = parseFloat(document.getElementById('ivaRate').value) / 100;
 
-  // Build maestro indexes
   const maestroByEAN = new Map();
   const maestroByDesc = new Map();
   const maestroByDescCompact = new Map();
@@ -436,7 +448,6 @@ function procesar() {
     if (descCompact) maestroByDescCompact.set(descCompact, idx);
   });
 
-  // Auto-detect if provider has real barcodes
   let provHasEAN = false;
   for (let i = 0; i < Math.min(provData.length, 20); i++) {
     const val = normEAN(provData[i][pEanCol]);
@@ -462,13 +473,11 @@ function procesar() {
     let matchType = 'notfound';
     let fuzzySim = 0;
 
-    // Step 1: EAN
     if (provHasEAN && pEan && maestroByEAN.has(pEan)) {
       mIdx = maestroByEAN.get(pEan);
       matchType = 'ean';
     }
 
-    // Step 2: Exact description
     if (mIdx < 0) {
       const pDescNorm = normDesc(pDesc);
       const pDescCompact = normDescCompact(pDesc);
@@ -579,7 +588,7 @@ function goDirectTN() {
   document.getElementById('step3ind').classList.add('active');
 }
 
-// ===== SELECTION COUNTER (NEW) =====
+// ===== SELECTION COUNTER =====
 function updateSelectionCounter() {
   const count = resultados.filter(r => r.checked && r.estado !== 'notfound').length;
   const el = document.getElementById('selectionCounter');
@@ -602,11 +611,9 @@ function renderReview() {
   }
   banner.innerHTML = bannerHTML;
 
-  // Stats
   const counts = { up: 0, down: 0, same: 0, notfound: 0 };
   resultados.forEach(r => { counts[r.estado]++; });
 
-  // FIX: active state now correctly applied to all pills including "Todos"
   const statsBar = document.getElementById('statsBar');
   statsBar.innerHTML = `
     <div class="stat-pill up ${filtroActual === 'up' ? 'active' : ''}" onclick="setFiltro('up')">▲ ${counts.up} subieron</div>
@@ -616,7 +623,6 @@ function renderReview() {
     <div class="stat-pill ${filtroActual === null ? 'active' : ''}" style="background:var(--accent-bg);color:var(--accent2)" onclick="setFiltro(null)">Todos (${resultados.length})</div>
   `;
 
-  // Table header
   document.getElementById('reviewHead').innerHTML = `<tr>
     <th style="width:40px"><input type="checkbox" class="cb" checked onchange="toggleAll(this.checked)"></th>
     <th>Estado</th>
@@ -679,7 +685,6 @@ function renderTableRows() {
   updateSelectionCounter();
 }
 
-// FIX: setFiltro now re-renders stats to update active state correctly
 function setFiltro(f) {
   filtroActual = filtroActual === f ? null : f;
   renderReview();
@@ -728,7 +733,7 @@ function renderExport() {
   document.getElementById('exportInfo').textContent = `Se exportarán ${selected.length} productos (solo los matcheados y seleccionados).`;
 }
 
-// ===== EXPORT INTERNO (now with confirm dialog) =====
+// ===== EXPORT INTERNO =====
 async function exportarInterno() {
   const selected = resultados.filter(r => r.checked && r.estado !== 'notfound');
   if (selected.length === 0) {
@@ -757,6 +762,7 @@ async function exportarInterno() {
     row['_PrecioAnterior'] = r.precioAnterior;
     row['_PrecioNuevo'] = r.precioNuevo;
     row['_Variacion%'] = r.variacion;
+    row['_PVP_Sugerido'] = r.pvp || '';
     row['_Estado'] = r.estado;
     row['_Match'] = r.matchType;
     row['_Fecha'] = new Date().toLocaleDateString('es-AR');
@@ -764,7 +770,7 @@ async function exportarInterno() {
     return row;
   });
 
-  const headers = [...maestroColumnOrder, '_PrecioAnterior', '_PrecioNuevo', '_Variacion%', '_Estado', '_Match', '_Fecha'];
+  const headers = [...maestroColumnOrder, '_PrecioAnterior', '_PrecioNuevo', '_Variacion%', '_PVP_Sugerido', '_Estado', '_Match', '_Fecha'];
 
   const ws = XLSX.utils.json_to_sheet(exportRows, { header: headers });
   const wb = XLSX.utils.book_new();
@@ -844,7 +850,6 @@ function generarTiendaNube(direct) {
   const gDescCol = gestionColumns[document.getElementById('selGestionDesc' + suffix).value];
   const gPvpCol = gestionColumns[document.getElementById('selGestionPVP' + suffix).value];
 
-  // Build lookup maps
   const pvpByEAN = new Map();
   const gestionByDesc = new Map();
   const gestionByDescCompact = new Map();
@@ -866,7 +871,6 @@ function generarTiendaNube(direct) {
     if (descCompact && pvp > 0) gestionByDescCompact.set(descCompact, { pvp, desc, idx, ean });
   });
 
-  // Find key columns in TN CSV
   const barCodeIdx = tnHeaders.findIndex(h => {
     const l = h.toLowerCase().replace(/[""]/g, '').trim();
     return l.includes('código de barras') || l.includes('codigo de barras') || l === 'barcode';
@@ -901,7 +905,6 @@ function generarTiendaNube(direct) {
     let matchDesc = '';
     let matchGestionEAN = '';
 
-    // Step 1: Match by EAN
     if (ean && pvpByEAN.has(ean)) {
       newPVP = pvpByEAN.get(ean).pvp;
       matchType = 'ean';
@@ -909,12 +912,10 @@ function generarTiendaNube(direct) {
       matchGestionEAN = ean;
     }
 
-    // Step 2: Match by name (fallback)
     if (newPVP === null && tnNombre) {
       const tnDescNorm = normDesc(tnNombre);
       const tnDescCompact = normDescCompact(tnNombre);
 
-      // 2a: Exact normalized
       if (tnDescNorm && gestionByDesc.has(tnDescNorm)) {
         const m = gestionByDesc.get(tnDescNorm);
         newPVP = m.pvp;
@@ -923,7 +924,6 @@ function generarTiendaNube(direct) {
         matchGestionEAN = m.ean || '';
       }
 
-      // 2b: Exact compact (no spaces)
       if (newPVP === null && tnDescCompact && gestionByDescCompact.has(tnDescCompact)) {
         const m = gestionByDescCompact.get(tnDescCompact);
         newPVP = m.pvp;
@@ -932,7 +932,6 @@ function generarTiendaNube(direct) {
         matchGestionEAN = m.ean || '';
       }
 
-      // 2c: Containment
       if (newPVP === null && tnDescNorm && tnDescNorm.length >= 3) {
         for (const entry of gestionDescList) {
           if (entry.descNorm.includes(tnDescNorm) || tnDescNorm.includes(entry.descNorm)) {
@@ -946,7 +945,6 @@ function generarTiendaNube(direct) {
               break;
             }
           }
-          // Compact containment
           if (tnDescCompact && entry.descCompact) {
             if (entry.descCompact.includes(tnDescCompact) || tnDescCompact.includes(entry.descCompact)) {
               const shorter = Math.min(entry.descCompact.length, tnDescCompact.length);
@@ -963,7 +961,6 @@ function generarTiendaNube(direct) {
         }
       }
 
-      // 2d: Fuzzy (FIX: now works — combinedSimilarity is defined above)
       if (newPVP === null && tnDescNorm) {
         let bestSim = 0, bestEntry = null;
         for (const entry of gestionDescList) {
@@ -979,7 +976,6 @@ function generarTiendaNube(direct) {
       }
     }
 
-    // Update price if matched and price changed
     if (newPVP !== null) {
       const oldPrecio = row[precioIdx];
       const oldPrecioNum = parsePrice(oldPrecio);
@@ -1002,10 +998,8 @@ function generarTiendaNube(direct) {
     tnUpdatedRows.push(row);
   }
 
-  // Show preview
   document.getElementById('tnPreview' + suffix).style.display = 'block';
 
-  // Stats
   let statsHTML = `
     <div class="stats-bar">
       <div class="stat-pill up">✎ ${matchCount} modificados</div>
@@ -1081,9 +1075,7 @@ function generarTiendaNube(direct) {
 
 function formatTNPrice(num) {
   if (typeof num !== 'number') num = parseFloat(num) || 0;
-  const parts = num.toFixed(2).split('.');
-  const intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return intPart + '.' + parts[1];
+  return num.toFixed(2);
 }
 
 function parseCSV(text, sep) {
@@ -1137,7 +1129,6 @@ function escapeCSVField(val, sep) {
   return s;
 }
 
-// FIX: descargarTiendaNube now accepts `direct` param (was ignored before)
 function descargarTiendaNube(direct) {
   if (tnUpdatedRows.length < 2) { toast('No hay datos para exportar.', 'warning'); return; }
 
