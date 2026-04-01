@@ -1,85 +1,23 @@
+         </table>
+        </div>
+        <div class="btn-bar"><button class="btn-primary" onclick="descargarTiendaNube(true)">⬇ Descargar CSV Tienda Nube</button></div>
+      </div>
 
-Confirmar
+      <div class="btn-bar" style="margin-top:24px">
+        <button class="btn-secondary" onclick="goStep(1)">← Volver al inicio</button>
+      </div>
+    </div>
 
-Cancelar Confirmar
-⚡
-PriceSync
-1
-Cargar
-›
-2
-Revisar
-›
-3
-Exportar
-🛒 Tienda Nube directo
-🧸 Juguetes / General
-📚 Libros
-📁 Archivo Maestro (tu catálogo actual)
-📤
-Arrastrá tu archivo o hacé clic para seleccionar
-.xls / .xlsx
+  </div>
 
-📋 Lista del Proveedor (nuevos precios)
-📤
-Arrastrá el archivo del proveedor o hacé clic
-.xls / .xlsx
+  <div class="modal-overlay" id="diagModal">
+    <div class="modal">
+      <h3>🔍 Diagnóstico de Códigos</h3>
+      <p style="color:var(--text2);font-size:13px;margin-bottom:16px">Muestra cómo el sistema lee los códigos de cada archivo para detectar problemas de matching.</p>
+      <pre id="diagContent"></pre>
+      <div class="btn-bar"><button class="btn-secondary" onclick="document.getElementById('diagModal').classList.remove('visible')">Cerrar</button></div>
+    </div>
+  </div>
 
-🧾 Configuración de IVA
-Precio del proveedor viene...
-              Neto (sin IVA)
-              Con IVA incluido
-            
-Alícuota IVA %
-Procesar archivos ➜
-
-0 seleccionados ⚙ Márgenes 🔍 Diagnóstico
-⚙ Configurar Margen de Ganancia
-Margen %
-Cálculo
-              Sobre costo (costo × 1.4)
-              Sobre venta (costo / 0.6)
-            
-Recalcular
-
-
-
-← Volver Exportar ➜
-
-
-📊 Paso 3A — Excel Interno
-Descargá el Excel con los precios actualizados para tu sistema de gestión.
-⬇ Descargar Excel Interno
-🛒 Paso 3B — Actualizar Tienda Nube
-Subí tu Excel de gestión actualizado y el CSV de Tienda Nube para generar el archivo con precios nuevos.
-① TU EXCEL DE GESTIÓN (CON PVP ACTUALIZADO)
-📁
-Subí tu archivo de gestión
-.xls / .xlsx
-
-② CSV ACTUAL DE TIENDA NUBE
-🛒
-Subí tu CSV de Tienda Nube
-.csv
-
-Comparar y generar CSV ➜
-← Revisar 🔄 Nueva carga
-🛒 Modo directo — Tienda Nube
-🛒 Actualizar Tienda Nube (directo)
-Subí tu Excel de gestión actualizado y el CSV de Tienda Nube para generar el archivo con precios nuevos.
-① TU EXCEL DE GESTIÓN (CON PVP ACTUALIZADO)
-📁
-Subí tu archivo de gestión
-.xls / .xlsx
-
-② CSV ACTUAL DE TIENDA NUBE
-🛒
-Subí tu CSV de Tienda Nube
-.csv
-
-Comparar y generar CSV ➜
-← Volver al inicio
-🔍 Diagnóstico de Códigos
-Muestra cómo el sistema lee los códigos de cada archivo para detectar problemas de matching.
-
-Cerrar
+  <script src="app.js"></script>
+</body>
