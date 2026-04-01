@@ -35,6 +35,7 @@ let provFileName = '';
 let resultados = [];
 let filtroActual = null;
 let provHasEANGlobal = true;
+let tnPreviewRows = [];
 
 // ===== TIPO SELECTOR =====
 function setTipo(tipo) {
@@ -469,12 +470,12 @@ function procesar() {
     let matchType = 'notfound';
     let fuzzySim = 0;
 
-    if (provHasEAN && pEan && maestroByEAN.has(pEan)) {
+    if (provHasEAN && pEan && pEan.length >= 8 && maestroByEAN.has(pEan)) {
       mIdx = maestroByEAN.get(pEan);
       matchType = 'ean';
     }
 
-    if (mIdx < 0) {
+    if (mIdx < 0 && tipoProducto !== 'libros') {
       const pDescNorm = normDesc(pDesc);
       const pDescCompact = normDescCompact(pDesc);
 
@@ -910,7 +911,8 @@ function generarTiendaNube(direct) {
 
   tnUpdatedRows = [tnHeaders];
   let matchCount = 0;
-  let previewRows = [];
+  tnPreviewRows = [];
+  let previewRows = tnPreviewRows;
   let statsByType = { ean: 0, desc_exact: 0, desc_contains: 0, desc_fuzzy: 0 };
 
   for (let i = 1; i < tnRows.length; i++) {
@@ -924,75 +926,11 @@ function generarTiendaNube(direct) {
     let matchDesc = '';
     let matchGestionEAN = '';
 
-    if (ean && pvpByEAN.has(ean)) {
+    if (ean && ean.length >= 8 && pvpByEAN.has(ean)) {
       newPVP = pvpByEAN.get(ean).pvp;
       matchType = 'ean';
       matchDesc = pvpByEAN.get(ean).desc;
       matchGestionEAN = ean;
-    }
-
-    if (newPVP === null && tnNombre) {
-      const tnDescNorm = normDesc(tnNombre);
-      const tnDescCompact = normDescCompact(tnNombre);
-
-      if (tnDescNorm && gestionByDesc.has(tnDescNorm)) {
-        const m = gestionByDesc.get(tnDescNorm);
-        newPVP = m.pvp;
-        matchType = 'desc_exact';
-        matchDesc = m.desc;
-        matchGestionEAN = m.ean || '';
-      }
-
-      if (newPVP === null && tnDescCompact && gestionByDescCompact.has(tnDescCompact)) {
-        const m = gestionByDescCompact.get(tnDescCompact);
-        newPVP = m.pvp;
-        matchType = 'desc_exact';
-        matchDesc = m.desc;
-        matchGestionEAN = m.ean || '';
-      }
-
-      if (newPVP === null && tnDescNorm && tnDescNorm.length >= 3) {
-        for (const entry of gestionDescList) {
-          if (entry.descNorm.includes(tnDescNorm) || tnDescNorm.includes(entry.descNorm)) {
-            const shorter = Math.min(entry.descNorm.length, tnDescNorm.length);
-            const longer = Math.max(entry.descNorm.length, tnDescNorm.length);
-            if (shorter / longer >= 0.4) {
-              newPVP = entry.pvp;
-              matchType = 'desc_contains';
-              matchDesc = entry.desc;
-              matchGestionEAN = entry.ean || '';
-              break;
-            }
-          }
-          if (tnDescCompact && entry.descCompact) {
-            if (entry.descCompact.includes(tnDescCompact) || tnDescCompact.includes(entry.descCompact)) {
-              const shorter = Math.min(entry.descCompact.length, tnDescCompact.length);
-              const longer = Math.max(entry.descCompact.length, tnDescCompact.length);
-              if (shorter / longer >= 0.4) {
-                newPVP = entry.pvp;
-                matchType = 'desc_contains';
-                matchDesc = entry.desc;
-                matchGestionEAN = entry.ean || '';
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (newPVP === null && tnDescNorm) {
-        let bestSim = 0, bestEntry = null;
-        for (const entry of gestionDescList) {
-          const sim = combinedSimilarity(tnNombre, entry.desc);
-          if (sim > bestSim) { bestSim = sim; bestEntry = entry; }
-        }
-        if (bestSim >= 0.40 && bestEntry) {
-          newPVP = bestEntry.pvp;
-          matchType = 'desc_fuzzy';
-          matchDesc = bestEntry.desc;
-          matchGestionEAN = bestEntry.ean || '';
-        }
-      }
     }
 
     if (newPVP !== null) {
@@ -1003,6 +941,8 @@ function generarTiendaNube(direct) {
         matchCount++;
         statsByType[matchType] = (statsByType[matchType] || 0) + 1;
         previewRows.push({
+          rowIndex: i,
+          checked: true,
           ean: barCodeIdx >= 0 ? row[barCodeIdx] : '',
           nombre: tnNombre,
           oldPrecio,
@@ -1047,9 +987,9 @@ function generarTiendaNube(direct) {
   const tbody = document.getElementById('tnBody' + suffix);
   tbody.innerHTML = '';
   if (previewRows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">No se encontraron precios diferentes para actualizar</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:24px">No se encontraron precios diferentes para actualizar</td></tr>';
   } else {
-    previewRows.forEach(p => {
+    previewRows.forEach((p, idx) => {
       const tr = document.createElement('tr');
       const badgeColors = {
         ean: 'background:var(--green-bg);color:var(--green)',
@@ -1077,6 +1017,7 @@ function generarTiendaNube(direct) {
       }
 
       tr.innerHTML = `
+        <td class="td-cb"><input type="checkbox" class="cb" ${p.checked ? 'checked' : ''} onchange="tnPreviewRows[${idx}].checked=this.checked;updateTNCounter()"></td>
         <td style="font-family:'Space Mono',monospace;font-size:11px">${p.ean || '<span style="color:var(--text3)">—</span>'}</td>
         <td style="max-width:300px">${p.nombre}${descExtra}${eanWarning}</td>
         <td>${badge}</td>
@@ -1148,12 +1089,35 @@ function escapeCSVField(val, sep) {
   return s;
 }
 
+function toggleAllTN(checked) {
+  tnPreviewRows.forEach(p => p.checked = checked);
+  document.querySelectorAll('#tnBody .cb, #tnBodyDirect .cb').forEach(cb => cb.checked = checked);
+  updateTNCounter();
+}
+
+function updateTNCounter() {
+  const count = tnPreviewRows.filter(p => p.checked).length;
+  const el = document.getElementById('tnSelectionCounter');
+  if (el) el.textContent = `${count} seleccionado${count !== 1 ? 's' : ''} de ${tnPreviewRows.length}`;
+}
+
 function descargarTiendaNube(direct) {
   if (tnUpdatedRows.length < 2) { toast('No hay datos para exportar.', 'warning'); return; }
 
-  const csvContent = tnUpdatedRows.map(row =>
-    row.map(cell => escapeCSVField(cell, tnSep)).join(tnSep)
-  ).join('\r\n');
+  const selected = new Set();
+  tnPreviewRows.forEach(p => {
+    if (p.checked) selected.add(p.rowIndex);
+  });
+
+  if (selected.size === 0) {
+    toast('No hay productos seleccionados para exportar.', 'warning');
+    return;
+  }
+
+  const csvContent = tnUpdatedRows
+    .filter((row, i) => i === 0 || selected.has(i))
+    .map(row => row.map(cell => escapeCSVField(cell, tnSep)).join(tnSep))
+    .join('\r\n');
 
   const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
   const encoded = new TextEncoder().encode(csvContent);
@@ -1165,7 +1129,7 @@ function descargarTiendaNube(direct) {
   a.download = `TiendaNube_Actualizado_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
-  toast('CSV de Tienda Nube descargado', 'success');
+  toast(`CSV exportado con ${selected.size} cambios de precio`, 'success');
 }
 
 // ===== DIAGNOSTICO =====
