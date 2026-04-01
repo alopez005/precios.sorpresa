@@ -728,6 +728,27 @@ function renderExport() {
 
   const selected = resultados.filter(r => r.checked && r.estado !== 'notfound');
   document.getElementById('exportInfo').textContent = `Se exportarán ${selected.length} productos (solo los matcheados y seleccionados).`;
+
+  // Auto-cargar datos de gestión desde resultados para paso 3B
+  if (selected.length > 0) {
+    gestionData = selected.map(r => ({
+      _ean: r.ean,
+      _desc: r.descMaestro || r.descProv,
+      _pvp: tipoProducto === 'libros' ? r.precioNuevo : r.pvp
+    }));
+    gestionColumns = ['_ean', '_desc', '_pvp'];
+
+    document.getElementById('dzGestion').classList.add('loaded');
+    document.getElementById('dzGestionFile').textContent = `✓ Desde paso 2 — ${selected.length} productos con precios actualizados`;
+    document.getElementById('gestionFields').style.display = 'none';
+
+    // Setear selects ocultos para que generarTiendaNube los lea
+    populateSelect('selGestionEAN', gestionColumns, 0);
+    populateSelect('selGestionDesc', gestionColumns, 1);
+    populateSelect('selGestionPVP', gestionColumns, 2);
+
+    checkTNReady(false);
+  }
 }
 
 // ===== EXPORT INTERNO (CORREGIDO: Tipado seguro de texto y números) =====
