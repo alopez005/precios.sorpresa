@@ -36,6 +36,12 @@ let resultados = [];
 let filtroActual = null;
 let provHasEANGlobal = true;
 let tnPreviewRows = [];
+let tnPreviewRowsDirect = [];
+
+// ===== WEB SUPPLIER STATE =====
+let webSuppliers = [];
+let webResults = [];
+let webFiltroActual = null;
 
 // ===== TIPO SELECTOR =====
 function setTipo(tipo) {
@@ -65,6 +71,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   });
+
+  loadSuppliersFromStorage();
+  renderSupplierList();
 });
 
 // ===== NORMALIZATION =====
@@ -585,6 +594,21 @@ function goDirectTN() {
   document.getElementById('step3ind').classList.add('active');
 }
 
+function goDirectWeb() {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel5').classList.add('active');
+  ['step1ind', 'step2ind', 'step3ind'].forEach(id => { document.getElementById(id).className = 'step-indicator'; });
+  const warning = document.getElementById('webMaestroWarning');
+  warning.style.display = maestroData ? 'none' : 'flex';
+  if (maestroData && maestroColumns.length > 0) {
+    const priceConfig = document.getElementById('webPriceColConfig');
+    priceConfig.style.display = 'block';
+    const pvpIdx = autoDetectColumn(maestroColumns, ['lista 2', 'lista2', 'precio venta', 'precio_venta', 'pvp', 'precio publico', 'lista1', 'precio']);
+    populateSelect('selWebPrecio', maestroColumns, pvpIdx);
+  }
+  renderSupplierList();
+}
+
 // ===== SELECTION COUNTER =====
 function updateSelectionCounter() {
   const count = resultados.filter(r => r.checked && r.estado !== 'notfound').length;
@@ -932,8 +956,7 @@ function generarTiendaNube(direct) {
 
   tnUpdatedRows = [tnHeaders];
   let matchCount = 0;
-  tnPreviewRows = [];
-  let previewRows = tnPreviewRows;
+  const currentPreviewRows = [];
   let statsByType = { ean: 0, desc_exact: 0, desc_contains: 0, desc_fuzzy: 0 };
 
   for (let i = 1; i < tnRows.length; i++) {
@@ -961,7 +984,7 @@ function generarTiendaNube(direct) {
         row[precioIdx] = formatTNPrice(newPVP);
         matchCount++;
         statsByType[matchType] = (statsByType[matchType] || 0) + 1;
-        previewRows.push({
+        currentPreviewRows.push({
           rowIndex: i,
           checked: true,
           ean: barCodeIdx >= 0 ? row[barCodeIdx] : '',
@@ -978,6 +1001,10 @@ function generarTiendaNube(direct) {
     tnUpdatedRows.push(row);
   }
 
+  if (direct) { tnPreviewRowsDirect = currentPreviewRows; }
+  else { tnPreviewRows = currentPreviewRows; }
+
+  const previewRows = direct ? tnPreviewRowsDirect : tnPreviewRows;
   document.getElementById('tnPreview' + suffix).style.display = 'block';
 
   let statsHTML = `
@@ -1037,8 +1064,9 @@ function generarTiendaNube(direct) {
         }
       }
 
+      const arrayName = direct ? 'tnPreviewRowsDirect' : 'tnPreviewRows';
       tr.innerHTML = `
-        <td class="td-cb"><input type="checkbox" class="cb" ${p.checked ? 'checked' : ''} onchange="tnPreviewRows[${idx}].checked=this.checked;updateTNCounter()"></td>
+        <td class="td-cb"><input type="checkbox" class="cb" ${p.checked ? 'checked' : ''} onchange="${arrayName}[${idx}].checked=this.checked;updateTNCounter(${!!direct})"></td>
         <td style="font-family:'Space Mono',monospace;font-size:11px">${p.ean || '<span style="color:var(--text3)">—</span>'}</td>
         <td style="max-width:300px">${p.nombre}${descExtra}${eanWarning}</td>
         <td>${badge}</td>
@@ -1110,23 +1138,28 @@ function escapeCSVField(val, sep) {
   return s;
 }
 
-function toggleAllTN(checked) {
-  tnPreviewRows.forEach(p => p.checked = checked);
-  document.querySelectorAll('#tnBody .cb, #tnBodyDirect .cb').forEach(cb => cb.checked = checked);
-  updateTNCounter();
+function toggleAllTN(checked, direct) {
+  const rows = direct ? tnPreviewRowsDirect : tnPreviewRows;
+  rows.forEach(p => p.checked = checked);
+  const suffix = direct ? 'Direct' : '';
+  document.querySelectorAll(`#tnBody${suffix} .cb`).forEach(cb => cb.checked = checked);
+  updateTNCounter(direct);
 }
 
-function updateTNCounter() {
-  const count = tnPreviewRows.filter(p => p.checked).length;
-  const el = document.getElementById('tnSelectionCounter');
-  if (el) el.textContent = `${count} seleccionado${count !== 1 ? 's' : ''} de ${tnPreviewRows.length}`;
+function updateTNCounter(direct) {
+  const rows = direct ? tnPreviewRowsDirect : tnPreviewRows;
+  const count = rows.filter(p => p.checked).length;
+  const suffix = direct ? 'Direct' : '';
+  const el = document.getElementById('tnSelectionCounter' + suffix);
+  if (el) el.textContent = `${count} seleccionado${count !== 1 ? 's' : ''} de ${rows.length}`;
 }
 
 function descargarTiendaNube(direct) {
   if (tnUpdatedRows.length < 2) { toast('No hay datos para exportar.', 'warning'); return; }
 
+  const rows = direct ? tnPreviewRowsDirect : tnPreviewRows;
   const selected = new Set();
-  tnPreviewRows.forEach(p => {
+  rows.forEach(p => {
     if (p.checked) selected.add(p.rowIndex);
   });
 
@@ -1181,6 +1214,720 @@ function mostrarDiagnostico() {
 
   document.getElementById('diagContent').textContent = info;
   document.getElementById('diagModal').classList.add('visible');
+}
+
+// ======================================================================
+// ===== PROVEEDORES WEB — PANEL 5 =====================================
+// ======================================================================
+
+function loadSuppliersFromStorage() {
+  try {
+    const stored = localStorage.getItem('pricesync_suppliers');
+    webSuppliers = stored ? JSON.parse(stored) : [];
+  } catch (e) {
+    webSuppliers = [];
+  }
+}
+
+function saveSuppliersToStorage() {
+  try { localStorage.setItem('pricesync_suppliers', JSON.stringify(webSuppliers)); } catch (e) { }
+}
+
+function addSupplier() {
+  const name = document.getElementById('webSupplierName').value.trim();
+  const url = document.getElementById('webSupplierUrl').value.trim();
+  if (!name) { toast('Ingresá el nombre del proveedor', 'warning'); return; }
+  if (!url || !url.startsWith('http')) { toast('Ingresá una URL válida (debe empezar con http)', 'warning'); return; }
+  webSuppliers.push({ id: Date.now(), name, url });
+  saveSuppliersToStorage();
+  document.getElementById('webSupplierName').value = '';
+  document.getElementById('webSupplierUrl').value = '';
+  renderSupplierList();
+  toast(`Proveedor "${name}" agregado`, 'success');
+}
+
+function removeSupplier(id) {
+  webSuppliers = webSuppliers.filter(s => s.id !== id);
+  saveSuppliersToStorage();
+  renderSupplierList();
+  toast('Proveedor eliminado', 'info');
+}
+
+function renderSupplierList() {
+  const container = document.getElementById('webSupplierList');
+  if (!container) return;
+  if (webSuppliers.length === 0) {
+    container.innerHTML = '<p style="color:var(--text3);font-size:13px;text-align:center;padding:20px 0">No hay proveedores registrados aún. Agregá el primero arriba.</p>';
+    return;
+  }
+  const grouped = {};
+  webSuppliers.forEach(s => {
+    if (!grouped[s.name]) grouped[s.name] = [];
+    grouped[s.name].push(s);
+  });
+  container.innerHTML = Object.entries(grouped).map(([name, items]) => `
+    <div class="web-supplier-card">
+      <div class="web-supplier-header">
+        <div class="web-supplier-icon">🏪</div>
+        <div style="flex:1">
+          <div class="web-supplier-name">${name}</div>
+          <div style="font-size:11px;color:var(--text3)">${items.length} URL${items.length !== 1 ? 's' : ''} registrada${items.length !== 1 ? 's' : ''}</div>
+        </div>
+      </div>
+      <div class="web-supplier-urls">
+        ${items.map(s => `
+          <div class="web-url-row">
+            <span class="web-url-text" title="${s.url}">${s.url}</span>
+            <button class="web-url-remove" onclick="removeSupplier(${s.id})" title="Eliminar">✕</button>
+          </div>`).join('')}
+      </div>
+    </div>`).join('');
+}
+
+// ===== SCRAPING =====
+async function fetchPageHTML(url) {
+  const proxies = [
+    { name: 'codetabs', url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, type: 'text' },
+    { name: 'allorigins', url: `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, type: 'json' }
+  ];
+  function isCloudflareChallenge(html) {
+    return html.includes('Just a moment') && html.includes('challenge') && !html.includes('googleItems') && !html.includes('data-product');
+  }
+  for (const proxy of proxies) {
+    try {
+      const resp = await fetch(proxy.url, { signal: AbortSignal.timeout(20000) });
+      if (!resp.ok) continue;
+      let html;
+      if (proxy.type === 'json') {
+        const data = await resp.json();
+        html = data.contents;
+      } else {
+        html = await resp.text();
+      }
+      if (html && html.length > 100 && !isCloudflareChallenge(html)) return html;
+    } catch (e) { /* try next proxy */ }
+  }
+  throw new Error('Todos los proxies fallaron (posible bloqueo de Cloudflare)');
+}
+
+function parseTiendanubeProducts(html, supplierName) {
+  const products = [];
+
+  // Strategy 1: googleItems JS array (most Tiendanube stores embed this)
+  const giStart = html.indexOf('googleItems');
+  if (giStart !== -1) {
+    const bracketStart = html.indexOf('[', giStart);
+    if (bracketStart !== -1) {
+      // Find matching closing bracket
+      let depth = 0, end = -1;
+      for (let i = bracketStart; i < html.length; i++) {
+        if (html[i] === '[') depth++;
+        else if (html[i] === ']') { depth--; if (depth === 0) { end = i + 1; break; } }
+      }
+      if (end > bracketStart) {
+        try {
+          const items = JSON.parse(html.substring(bracketStart, end));
+          for (const item of items) {
+            const name = item.info?.item_name;
+            const price = item.info?.price;
+            if (name && price > 0) {
+              products.push({ name: String(name).trim(), price: parseFloat(price) || 0, supplierName });
+            }
+          }
+        } catch (e) { }
+      }
+    }
+  }
+
+  // Strategy 2: js-item-name + data-product-price (results_only fragments and full pages)
+  if (products.length === 0) {
+    const namePattern = /class="[^"]*js-item-name[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+    const pricePattern = /data-product-price="(\d+)"/gi;
+    const names = [], prices = [];
+    let nm;
+    while ((nm = namePattern.exec(html)) !== null) {
+      const name = nm[1].replace(/<[^>]+>/g, '').trim();
+      if (name) names.push(name);
+    }
+    while ((nm = pricePattern.exec(html)) !== null) {
+      prices.push(parseInt(nm[1]) / 100);
+    }
+    // Match names with prices by position
+    const count = Math.min(names.length, prices.length);
+    for (let i = 0; i < count; i++) {
+      if (names[i] && prices[i] > 0) {
+        products.push({ name: names[i], price: prices[i], supplierName });
+      }
+    }
+  }
+
+  // Strategy 3: JSON-LD
+  if (products.length === 0) {
+    const jsonLdMatches = html.match(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+    for (const script of jsonLdMatches) {
+      try {
+        const json = JSON.parse(script.replace(/<\/?script[^>]*>/gi, ''));
+        if (json['@type'] === 'Product' || (Array.isArray(json) && json[0]?.['@type'] === 'Product')) {
+          const items = Array.isArray(json) ? json : [json];
+          for (const item of items) {
+            const name = item.name;
+            const price = item.offers?.price || item.offers?.[0]?.price;
+            if (name && price) {
+              products.push({ name: String(name).trim(), price: parseFloat(price) || 0, supplierName });
+            }
+          }
+        }
+      } catch (e) { }
+    }
+  }
+
+  // Strategy 3: data-product-id DOM pattern
+  if (products.length === 0) {
+    const clean = html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '');
+    const itemPattern = /data-product-id="(\d+)"[\s\S]*?class="[^"]*(?:item-name|product-item-name)[^"]*"[^>]*>([^<]+)<[\s\S]*?\$([\d.,]+)/gi;
+    let m;
+    while ((m = itemPattern.exec(clean)) !== null) {
+      const name = m[2].trim();
+      const price = parsePrice(m[3]);
+      if (name && price > 0) products.push({ name, price, supplierName });
+    }
+
+    // Strategy 4: product link anchors with nearby price
+    if (products.length === 0) {
+      const prodLinkPattern = /<a[^>]+href="[^"]*\/productos\/[^"]*"[^>]*(?:title="([^"]+)")?[^>]*>([\s\S]*?)<\/a>/gi;
+      const found = new Map();
+      let match;
+      while ((match = prodLinkPattern.exec(clean)) !== null) {
+        const title = match[1] || '';
+        const inner = match[2] || '';
+        let name = (title || inner.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')).trim();
+        name = name.replace(/\s*-\s*comprar online\s*$/i, '').trim();
+        if (!name || name.length < 3 || found.has(name.toLowerCase())) continue;
+        const startIdx = match.index;
+        const snippet = clean.substring(startIdx, startIdx + 800);
+        const priceM = snippet.match(/\$([\d.,]+)/);
+        if (priceM) {
+          const price = parsePrice(priceM[1]);
+          if (price > 0) {
+            found.set(name.toLowerCase(), true);
+            products.push({ name, price, supplierName });
+          }
+        }
+      }
+    }
+  }
+
+  // Deduplicate
+  const seen = new Set();
+  return products.filter(p => {
+    const key = normDesc(p.name);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function matchScrapedProducts(scraped, mDescCol, mPrecioCol) {
+  if (!maestroData || !mDescCol) return [];
+
+  // Find "Marca" column in maestro for brand-based filtering
+  const marcaColIdx = maestroColumns.findIndex(c =>
+    normDesc(c).includes('marca'));
+  const marcaCol = marcaColIdx >= 0 ? maestroColumns[marcaColIdx] : null;
+
+  // Build index: all products with their normalized names
+  const maestroDescList = [];
+  maestroData.forEach((row, idx) => {
+    const d = normDesc(row[mDescCol]);
+    const dc = normDescCompact(row[mDescCol]);
+    const brand = marcaCol ? normDesc(row[marcaCol]) : '';
+    if (d) maestroDescList.push({ desc: d, compact: dc, idx, brand });
+  });
+
+  // Helper: try to match pNorm against a subset of maestro entries
+  function tryMatch(pNorm, pCompact, entries, tokenThreshold) {
+    // 1. Exact match
+    for (const m of entries) {
+      if (m.desc === pNorm || m.compact === pCompact) return m.idx;
+    }
+    // 2. Containment
+    if (pNorm.length >= 4) {
+      for (const m of entries) {
+        if (m.desc.includes(pNorm) || pNorm.includes(m.desc)) return m.idx;
+      }
+    }
+    // 3. Token overlap
+    if (pNorm.length >= 4) {
+      let bestScore = 0, bestIdx = -1;
+      const pTokens = new Set(pNorm.split(' ').filter(t => t.length > 1));
+      if (pTokens.size >= 1) {
+        for (const m of entries) {
+          const mTokens = new Set(m.desc.split(' ').filter(t => t.length > 1));
+          if (mTokens.size === 0) continue;
+          let overlap = 0;
+          for (const t of pTokens) if (mTokens.has(t)) overlap++;
+          const score = overlap / Math.max(pTokens.size, mTokens.size);
+          if (score > bestScore) { bestScore = score; bestIdx = m.idx; }
+        }
+        if (bestScore >= tokenThreshold) return bestIdx;
+      }
+    }
+    return -1;
+  }
+
+  return scraped.map(p => {
+    const pNorm = normDesc(p.name);
+    const pCompact = normDescCompact(p.name);
+    let mIdx = -1;
+
+    // Phase 1: Try matching ONLY among products of same brand (supplier name ~ marca)
+    // This allows a lower threshold (50%) since brand already confirms the match
+    if (marcaCol) {
+      const supplierNorm = normDesc(p.supplierName);
+      const brandEntries = maestroDescList.filter(m =>
+        m.brand && (m.brand.includes(supplierNorm) || supplierNorm.includes(m.brand)));
+      if (brandEntries.length > 0) {
+        mIdx = tryMatch(pNorm, pCompact, brandEntries, 0.5);
+      }
+    }
+
+    // Phase 2: If no brand match found, try all products with higher threshold (70%)
+    if (mIdx < 0) {
+      mIdx = tryMatch(pNorm, pCompact, maestroDescList, 0.7);
+    }
+
+    if (mIdx >= 0) {
+      const mRow = maestroData[mIdx];
+      const precioAnterior = parsePrice(mRow[mPrecioCol]);
+      const precioNuevo = p.price;
+      let estado = precioNuevo > precioAnterior ? 'up' : (precioNuevo < precioAnterior ? 'down' : 'same');
+      const variacion = precioAnterior > 0 ? Math.round(((precioNuevo - precioAnterior) / precioAnterior * 100) * 100) / 100 : 0;
+      return {
+        supplierName: p.supplierName, supplierUrl: p.url || '',
+        descProv: p.name, descMaestro: mRow[mDescCol] || '',
+        precioAnterior, precioNuevo,
+        estado, variacion, maestroIdx: mIdx, maestroRow: { ...mRow },
+        checked: estado !== 'same'
+      };
+    }
+    return {
+      supplierName: p.supplierName, supplierUrl: p.url || '',
+      descProv: p.name, descMaestro: '', precioAnterior: 0,
+      precioNuevo: p.price, estado: 'notfound', variacion: 0,
+      maestroIdx: -1, maestroRow: null, checked: false
+    };
+  });
+}
+
+// ===== SYNC ORCHESTRATOR =====
+async function startWebSync() {
+  if (!maestroData) {
+    toast('Primero cargá tu archivo maestro en el Paso 1', 'warning');
+    document.getElementById('webMaestroWarning').style.display = 'flex';
+    return;
+  }
+  if (webSuppliers.length === 0) {
+    toast('No hay proveedores registrados. Agregá al menos uno.', 'warning');
+    return;
+  }
+
+  const mDescCol = maestroColumns[document.getElementById('selMaestroDesc')?.value || 0];
+  const webPrecioSel = document.getElementById('selWebPrecio');
+  const mPrecioCol = webPrecioSel && webPrecioSel.options.length > 0
+    ? maestroColumns[webPrecioSel.value]
+    : maestroColumns[document.getElementById('selMaestroPrecio')?.value || 0];
+
+  const btn = document.getElementById('btnWebSync');
+  btn.disabled = true;
+  btn.textContent = '⏳ Sincronizando...';
+
+  const progressDiv = document.getElementById('webSyncProgress');
+  const progressFill = document.getElementById('webProgressFill');
+  const progressLog = document.getElementById('webProgressLog');
+  progressDiv.style.display = 'block';
+  progressLog.innerHTML = '';
+
+  const allScraped = [];
+  const total = webSuppliers.length;
+
+  function logLine(msg, type) {
+    const div = document.createElement('div');
+    div.className = 'web-log-line' + (type ? ' ' + type : '');
+    div.textContent = msg;
+    progressLog.appendChild(div);
+    progressLog.scrollTop = progressLog.scrollHeight;
+  }
+
+  for (let i = 0; i < total; i++) {
+    const s = webSuppliers[i];
+    progressFill.style.width = Math.round((i / total) * 100) + '%';
+    logLine(`⏳ [${i + 1}/${total}] Scrapeando: ${s.name} — ${s.url}`);
+    try {
+      // First page
+      let baseUrl = s.url;
+      let html = await fetchPageHTML(baseUrl);
+
+      // If no LS.productsCount, try to find a /productos link for full catalog
+      if (!html.match(/LS\.productsCount/) ) {
+        const prodLinkMatch = html.match(/href="(https?:\/\/[^"]*\/productos\d*\/?)"/i);
+        if (prodLinkMatch) {
+          logLine(`   ↳ Redirigiendo a catálogo completo: ${prodLinkMatch[1]}`);
+          baseUrl = prodLinkMatch[1];
+          html = await fetchPageHTML(baseUrl);
+        }
+      }
+
+      let scraped = parseTiendanubeProducts(html, s.name);
+
+      // If no products found, try ?results_only=true (returns HTML fragment with products)
+      if (scraped.length === 0) {
+        const roUrl = baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'results_only=true';
+        logLine(`   ↳ Probando carga AJAX: ${roUrl.substring(0, 60)}...`);
+        try {
+          const roHtml = await fetchPageHTML(roUrl);
+          scraped = parseTiendanubeProducts(roHtml, s.name);
+        } catch (e) { /* fallback failed */ }
+      }
+
+      scraped.forEach(p => { p.url = baseUrl; });
+      allScraped.push(...scraped);
+
+      // Check for pagination (LS.productsCount)
+      const countMatch = html.match(/LS\.productsCount\s*=\s*(\d+)/);
+      const totalProducts = countMatch ? parseInt(countMatch[1]) : 0;
+      const perPage = scraped.length;
+
+      if (totalProducts > perPage && perPage > 0) {
+        const totalPages = Math.ceil(totalProducts / perPage);
+        logLine(`   ℹ ${totalProducts} productos en ${totalPages} páginas — scrapeando todas...`);
+        let emptyStreak = 0;
+        for (let page = 2; page <= totalPages; page++) {
+          await new Promise(r => setTimeout(r, 1500));
+          try {
+            const sep = baseUrl.includes('?') ? '&' : '?';
+            // Use results_only for pagination too
+            const pageUrl = `${baseUrl}${sep}page=${page}&results_only=true`;
+            const pageHtml = await fetchPageHTML(pageUrl);
+            const pageScraped = parseTiendanubeProducts(pageHtml, s.name);
+            pageScraped.forEach(p => { p.url = pageUrl; });
+            allScraped.push(...pageScraped);
+            logLine(`   📄 Página ${page}/${totalPages}: ${pageScraped.length} productos`);
+            if (pageScraped.length === 0) {
+              emptyStreak++;
+              if (emptyStreak >= 3) { logLine(`   ⚠ 3 páginas vacías seguidas — posible bloqueo, deteniendo`); break; }
+            } else { emptyStreak = 0; }
+          } catch (e) {
+            logLine(`   ⚠ Página ${page}: ${e.message}`, 'error');
+            emptyStreak++;
+            if (emptyStreak >= 3) break;
+          }
+        }
+      }
+
+      const totalForSupplier = allScraped.filter(p => p.supplierName === s.name).length;
+      logLine(`   ✓ ${totalForSupplier} productos encontrados en ${s.name}`, 'success');
+    } catch (err) {
+      logLine(`   ✗ Error en ${s.name}: ${err.message}`, 'error');
+    }
+    progressFill.style.width = Math.round(((i + 1) / total) * 100) + '%';
+  }
+
+  logLine(`\n📊 Total scrapeado: ${allScraped.length} productos`);
+  logLine('🔗 Matcheando con tu catálogo por nombre exacto...');
+
+  webResults = matchScrapedProducts(allScraped, mDescCol, mPrecioCol);
+
+  const matched = webResults.filter(r => r.estado !== 'notfound').length;
+  logLine(`✅ Match completado: ${matched} de ${webResults.length} productos matcheados`, 'success');
+
+  progressFill.style.width = '100%';
+  btn.disabled = false;
+  btn.textContent = '🔄 Sincronizar de nuevo';
+  document.getElementById('webSyncStatus').textContent = `Última sync: ${new Date().toLocaleTimeString('es-AR')}`;
+
+  renderWebResults();
+  document.getElementById('webResultsSection').style.display = 'block';
+  document.getElementById('webResultsSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast(`Sync completada: ${matched} productos matcheados`, 'success');
+}
+
+function renderWebResults() {
+  const counts = { up: 0, down: 0, same: 0, notfound: 0 };
+  webResults.forEach(r => counts[r.estado]++);
+
+  document.getElementById('webStatsBar').innerHTML = `
+    <div class="stat-pill up ${webFiltroActual === 'up' ? 'active' : ''}" onclick="setWebFiltro('up')">▲ ${counts.up} subieron</div>
+    <div class="stat-pill down ${webFiltroActual === 'down' ? 'active' : ''}" onclick="setWebFiltro('down')">▼ ${counts.down} bajaron</div>
+    <div class="stat-pill same ${webFiltroActual === 'same' ? 'active' : ''}" onclick="setWebFiltro('same')">= ${counts.same} sin cambio</div>
+    <div class="stat-pill notfound ${webFiltroActual === 'notfound' ? 'active' : ''}" onclick="setWebFiltro('notfound')">✗ ${counts.notfound} sin match</div>
+    <div class="stat-pill ${webFiltroActual === null ? 'active' : ''}" style="background:var(--accent-bg);color:var(--accent2)" onclick="setWebFiltro(null)">Todos (${webResults.length})</div>`;
+
+  renderWebTableRows();
+}
+
+function renderWebTableRows() {
+  const search = (document.getElementById('webSearchInput')?.value || '').toLowerCase();
+  const tbody = document.getElementById('webResultsBody');
+  tbody.innerHTML = '';
+
+  webResults.forEach((r, i) => {
+    if (webFiltroActual && r.estado !== webFiltroActual) return;
+    if (search && !`${r.descMaestro} ${r.descProv} ${r.supplierName}`.toLowerCase().includes(search)) return;
+
+    let estadoBadge = r.estado === 'up' ? '<span class="badge badge-up">▲ Subió</span>'
+      : (r.estado === 'down' ? '<span class="badge badge-down">▼ Bajó</span>'
+        : (r.estado === 'same' ? '<span class="badge badge-same">= Igual</span>'
+          : '<span class="badge badge-notfound">✗ Sin match</span>'));
+
+    const priceClass = r.estado === 'up' ? 'price-up' : (r.estado === 'down' ? 'price-down' : 'price-same');
+    const rowClass = r.estado === 'notfound' ? 'row-notfound' : '';
+    const checkboxCell = r.estado === 'notfound'
+      ? '<span style="color:var(--text3)">—</span>'
+      : `<input type="checkbox" class="cb" ${r.checked ? 'checked' : ''} onchange="webResults[${i}].checked=this.checked;updateWebCounter()">`;
+
+    const tr = document.createElement('tr');
+    tr.className = rowClass;
+    tr.innerHTML = `
+      <td class="td-cb">${checkboxCell}</td>
+      <td class="td-badge">${estadoBadge}</td>
+      <td style="font-size:12px;color:var(--green)">${r.supplierName}</td>
+      <td class="td-desc">${r.descMaestro || '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="td-desc" style="color:var(--text2);font-size:12px">${r.descProv}</td>
+      <td class="td-price price-change ${priceClass}">$${r.precioAnterior.toLocaleString('es-AR', { minimumFractionDigits: 2 })}</td>
+      <td class="td-price price-change ${priceClass}">$${r.precioNuevo.toLocaleString('es-AR', { minimumFractionDigits: 2 })}</td>
+      <td class="td-price price-change ${priceClass}">${r.variacion > 0 ? '+' : ''}${r.variacion}%</td>`;
+    tbody.appendChild(tr);
+  });
+
+  updateWebCounter();
+}
+
+function setWebFiltro(f) { webFiltroActual = webFiltroActual === f ? null : f; renderWebResults(); }
+function filtrarWebTabla() { renderWebTableRows(); }
+
+function toggleAllWeb(checked) {
+  webResults.forEach(r => { r.checked = r.estado === 'notfound' ? false : checked; });
+  renderWebTableRows();
+}
+
+function updateWebCounter() {
+  const count = webResults.filter(r => r.checked && r.estado !== 'notfound').length;
+  const el = document.getElementById('webSelectionCounter');
+  if (el) el.textContent = `${count} seleccionado${count !== 1 ? 's' : ''}`;
+}
+
+function exportarWebExcel() {
+  const selected = webResults.filter(r => r.checked && r.estado !== 'notfound');
+  if (selected.length === 0) { toast('No hay productos seleccionados', 'warning'); return; }
+
+  const mPrecioCol = maestroColumns[document.getElementById('selMaestroPrecio')?.value || 0];
+  const mEanCol = maestroColumns[document.getElementById('selMaestroEAN')?.value || 0];
+
+  const exportRows = selected.map(r => {
+    const row = {};
+    maestroColumnOrder.forEach(col => {
+      if (!r.maestroRow) { row[col] = ''; return; }
+      let val = r.maestroRow[col];
+      const colLower = col.toLowerCase();
+      if (col === mEanCol || colLower.includes('ean') || colLower.includes('cod') || colLower.includes('barras') || colLower.includes('sku')) {
+        row[col] = val != null ? String(val) : '';
+      } else { row[col] = val != null ? val : ''; }
+    });
+    row[mPrecioCol] = r.precioNuevo;
+    row['_PrecioAnterior'] = r.precioAnterior;
+    row['_PrecioNuevo'] = r.precioNuevo;
+    row['_Variacion%'] = r.variacion;
+    row['_Proveedor'] = r.supplierName;
+    row['_Estado'] = r.estado;
+    row['_Fecha'] = new Date().toLocaleDateString('es-AR');
+    return row;
+  });
+
+  const headers = [...maestroColumnOrder, '_PrecioAnterior', '_PrecioNuevo', '_Variacion%', '_Proveedor', '_Estado', '_Fecha'];
+  const ws = XLSX.utils.json_to_sheet(exportRows, { header: headers });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Precios Web');
+  XLSX.writeFile(wb, `PriceSync_Web_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  toast(`Excel exportado con ${selected.length} productos`, 'success');
+}
+
+function aplicarWebResultados() {
+  const selected = webResults.filter(r => r.checked && r.estado !== 'notfound');
+  if (selected.length === 0) { toast('No hay productos seleccionados', 'warning'); return; }
+  if (!maestroData) { toast('Necesitás cargar el Archivo Maestro primero', 'warning'); return; }
+
+  const mPrecioCol = maestroColumns[document.getElementById('selMaestroPrecio')?.value || 0];
+  const mEanCol = maestroColumns[document.getElementById('selMaestroEAN')?.value || 0];
+  const mDescCol = maestroColumns[document.getElementById('selMaestroDesc')?.value || 0];
+  const mCodIntCol = maestroColumns[document.getElementById('selMaestroCodInt')?.value || 0];
+
+  provHasEANGlobal = false;
+  resultados = selected.map(r => ({
+    maestroIdx: r.maestroIdx,
+    maestroRow: r.maestroRow,
+    ean: r.maestroRow ? normEAN(r.maestroRow[mEanCol]) : '',
+    eanDisplay: r.maestroRow ? r.maestroRow[mEanCol] : '',
+    codInt: r.maestroRow ? (r.maestroRow[mCodIntCol] || '') : '',
+    descMaestro: r.descMaestro,
+    descProv: r.descProv,
+    precioAnterior: r.precioAnterior,
+    precioNuevo: r.precioNuevo,
+    pvp: r.precioNuevo,
+    estado: r.estado,
+    variacion: r.variacion,
+    matchType: 'desc_exact',
+    fuzzySim: 0,
+    targetCol: mPrecioCol,
+    checked: true
+  }));
+
+  toast(`${selected.length} productos enviados al flujo principal`, 'success');
+  goStep(2);
+}
+
+// ===== TIENDA NUBE DESDE WEB (Panel 5) =====
+let tnWebRawText = '';
+let tnWebRows = [];
+let tnWebHeaders = [];
+let tnWebSep = ';';
+let tnWebUpdatedRows = [];
+let tnWebPreviewRows = [];
+
+function onTNFileWeb(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    tnWebRawText = e.target.result;
+    const firstLine = tnWebRawText.split('\n')[0];
+    tnWebSep = (firstLine.split(';').length > firstLine.split(',').length) ? ';' : ',';
+    tnWebRows = parseCSV(tnWebRawText, tnWebSep);
+    if (tnWebRows.length < 2) { toast('El archivo parece vacío.', 'error'); return; }
+    tnWebHeaders = tnWebRows[0];
+    document.getElementById('dzTNWeb').classList.add('loaded');
+    document.getElementById('dzTNWebFile').textContent = `✓ ${file.name} — ${tnWebRows.length - 1} productos`;
+    const selected = webResults.filter(r => r.checked && r.estado !== 'notfound');
+    document.getElementById('btnGenerarTNWeb').disabled = selected.length === 0;
+    toast('CSV de Tienda Nube cargado', 'success');
+  };
+  reader.readAsText(file, 'iso-8859-1');
+}
+
+function generarTiendaNubeWeb() {
+  const selected = webResults.filter(r => r.checked && r.estado !== 'notfound');
+  if (selected.length === 0) { toast('No hay productos seleccionados de la sincronización web.', 'warning'); return; }
+  if (tnWebRows.length < 2) { toast('Cargá el CSV de Tienda Nube primero.', 'warning'); return; }
+
+  // Build lookup by normalized description from web results
+  const pvpByDesc = new Map();
+  const pvpByDescCompact = new Map();
+  selected.forEach(r => {
+    const descNorm = normDesc(r.descMaestro || r.descProv);
+    const descCompact = normDescCompact(r.descMaestro || r.descProv);
+    if (descNorm) pvpByDesc.set(descNorm, { pvp: r.precioNuevo, desc: r.descProv });
+    if (descCompact) pvpByDescCompact.set(descCompact, { pvp: r.precioNuevo, desc: r.descProv });
+  });
+
+  const precioIdx = tnWebHeaders.findIndex(h => h.toLowerCase().replace(/[""]/g, '').trim() === 'precio');
+  const nombreIdx = tnWebHeaders.findIndex(h => h.toLowerCase().replace(/[""]/g, '').trim() === 'nombre');
+  const barCodeIdx = tnWebHeaders.findIndex(h => { const l = h.toLowerCase().replace(/[""]/g, '').trim(); return l.includes('código de barras') || l.includes('codigo de barras') || l === 'barcode'; });
+
+  if (precioIdx === -1) { toast('No se encontró la columna "Precio" en el CSV.', 'error'); return; }
+
+  tnWebUpdatedRows = [tnWebHeaders];
+  tnWebPreviewRows = [];
+  let matchCount = 0;
+
+  for (let i = 1; i < tnWebRows.length; i++) {
+    const row = [...tnWebRows[i]];
+    while (row.length < tnWebHeaders.length) row.push('');
+    const tnNombre = nombreIdx >= 0 ? String(row[nombreIdx] || '').replace(/^"|"$/g, '').trim() : '';
+    let newPVP = null;
+    let matchDesc = '';
+
+    if (tnNombre) {
+      const tnNorm = normDesc(tnNombre);
+      const tnCompact = normDescCompact(tnNombre);
+      if (pvpByDesc.has(tnNorm)) {
+        const entry = pvpByDesc.get(tnNorm);
+        newPVP = entry.pvp; matchDesc = entry.desc;
+      } else if (pvpByDescCompact.has(tnCompact)) {
+        const entry = pvpByDescCompact.get(tnCompact);
+        newPVP = entry.pvp; matchDesc = entry.desc;
+      }
+    }
+
+    if (newPVP !== null) {
+      const oldPrecio = row[precioIdx];
+      const oldPrecioNum = parsePrice(oldPrecio);
+      if (Math.abs(oldPrecioNum - newPVP) > 0.01) {
+        row[precioIdx] = formatTNPrice(newPVP);
+        matchCount++;
+        tnWebPreviewRows.push({
+          rowIndex: i, checked: true,
+          nombre: tnNombre, oldPrecio, newPrecio: row[precioIdx],
+          matchDesc
+        });
+      }
+    }
+    tnWebUpdatedRows.push(row);
+  }
+
+  document.getElementById('tnPreviewWeb').style.display = 'block';
+  document.getElementById('tnStatsWeb').innerHTML = `
+    <div class="stats-bar">
+      <div class="stat-pill up">✎ ${matchCount} modificados</div>
+      <div class="stat-pill same">— ${tnWebRows.length - 1 - matchCount} sin cambio</div>
+      <div class="stat-pill" style="background:var(--accent-bg);color:var(--accent2)">${tnWebRows.length - 1} total</div>
+    </div>`;
+
+  const tbody = document.getElementById('tnBodyWeb');
+  tbody.innerHTML = '';
+  if (tnWebPreviewRows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">No se encontraron precios diferentes para actualizar</td></tr>';
+  } else {
+    tnWebPreviewRows.forEach((p, idx) => {
+      const tr = document.createElement('tr');
+      const descExtra = p.matchDesc ? `<br><span style="font-size:11px;color:var(--text3)">→ ${p.matchDesc}</span>` : '';
+      tr.innerHTML = `
+        <td class="td-cb"><input type="checkbox" class="cb" ${p.checked ? 'checked' : ''} onchange="tnWebPreviewRows[${idx}].checked=this.checked;updateTNCounterWeb()"></td>
+        <td style="max-width:300px">${p.nombre}${descExtra}</td>
+        <td><span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;background:var(--accent-bg);color:var(--accent2)">NOMBRE</span></td>
+        <td class="price-change price-same">$${p.oldPrecio}</td>
+        <td class="price-change price-up">$${p.newPrecio}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+  updateTNCounterWeb();
+  document.getElementById('tnPreviewWeb').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast(`${matchCount} precios actualizados para Tienda Nube`, 'success');
+}
+
+function toggleAllTNWeb(checked) {
+  tnWebPreviewRows.forEach(p => p.checked = checked);
+  document.querySelectorAll('#tnBodyWeb .cb').forEach(cb => cb.checked = checked);
+  updateTNCounterWeb();
+}
+
+function updateTNCounterWeb() {
+  const count = tnWebPreviewRows.filter(p => p.checked).length;
+  const el = document.getElementById('tnSelectionCounterWeb');
+  if (el) el.textContent = `${count} seleccionado${count !== 1 ? 's' : ''} de ${tnWebPreviewRows.length}`;
+}
+
+function descargarTiendaNubeWeb() {
+  if (tnWebUpdatedRows.length < 2) { toast('No hay datos para exportar.', 'warning'); return; }
+  const selected = new Set();
+  tnWebPreviewRows.forEach(p => { if (p.checked) selected.add(p.rowIndex); });
+  if (selected.size === 0) { toast('No hay productos seleccionados.', 'warning'); return; }
+  const csvContent = tnWebUpdatedRows.filter((row, i) => i === 0 || selected.has(i)).map(row => row.map(cell => escapeCSVField(cell, tnWebSep)).join(tnWebSep)).join('\r\n');
+  const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+  const encoded = new TextEncoder().encode(csvContent);
+  const blob = new Blob([bom, encoded], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `TiendaNube_Web_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click(); URL.revokeObjectURL(url);
+  toast(`CSV exportado con ${selected.size} cambios de precio`, 'success');
 }
 
 // ===== INIT =====
