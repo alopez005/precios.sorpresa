@@ -472,7 +472,15 @@ function PriceSync() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "tiendanube_stock_actualizado.csv";
+    const now = new Date();
+    const dd = String(now.getDate()).padStart(2, "0");
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const yy = String(now.getFullYear()).slice(-2);
+    const dateStr = `${dd}-${mm}-${yy}`;
+    const provStr = selectedProvider
+      ? `_${selectedProvider.replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ ]/g, "").replace(/\s+/g, "_")}`
+      : "";
+    a.download = `tiendanube_actualizado${provStr}_${dateStr}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
