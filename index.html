@@ -124,6 +124,12 @@ async function parseExcel(file) {
 
 function detectColumn(headers, keywords) {
   const norm = headers.map(h => normalize(h));
+  // Pass 1: exact match
+  for (const kw of keywords) {
+    const idx = norm.findIndex(h => h === kw);
+    if (idx !== -1) return headers[idx];
+  }
+  // Pass 2: includes match
   for (const kw of keywords) {
     const idx = norm.findIndex(h => h.includes(kw));
     if (idx !== -1) return headers[idx];
@@ -174,7 +180,7 @@ function PriceSync() {
         name: detectColumn(data.headers, ["nombre", "descripcion", "producto", "articulo", "name", "detalle", "denominacion"]) || "",
         stock: detectColumn(data.headers, ["stock", "cantidad", "existencia", "qty", "inventario", "disponible", "saldo"]) || "",
         price: detectColumn(data.headers, ["precio lista 2", "precio_lista2", "precio lista2", "preciolista2", "lista 2", "lista2", "precio de lista 2", "precio venta", "precio", "price", "pvp", "precio lista"]) || "",
-        provider: detectColumn(data.headers, ["proveedor", "provider", "distribuidor", "marca", "fabricante", "supplier"]) || "",
+        provider: detectColumn(data.headers, ["marca", "proveedor", "provider", "distribuidor", "fabricante", "supplier"]) || "",
       });
       setSelectedProvider("");
     } catch (err) { setError("Error al leer archivo de gestión: " + err.message); }
