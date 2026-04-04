@@ -1,13 +1,17 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PriceSync v2 — Actualizador de Precios</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
+    rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
 
   <div class="toast-container" id="toastContainer"></div>
@@ -19,16 +23,6 @@
       <div class="btn-bar">
         <button class="btn-secondary" onclick="closeConfirm(false)">Cancelar</button>
         <button class="btn-primary" onclick="closeConfirm(true)">Confirmar</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="modal-overlay" id="diagModal">
-    <div class="modal">
-      <h3>🔍 Diagnóstico de Códigos</h3>
-      <pre id="diagContent"></pre>
-      <div class="btn-bar">
-        <button class="btn-secondary" onclick="document.getElementById('diagModal').classList.remove('visible')">Cerrar</button>
       </div>
     </div>
   </div>
@@ -51,13 +45,14 @@
         <div class="step-num">3</div> Exportar
       </div>
     </div>
-    <button class="btn-shortcut-tn" onclick="goDirectTN()" title="Ir directo a Tienda Nube">🛒 Tienda Nube directo</button>
+    <button class="btn-shortcut-tn" onclick="goDirectTN()" title="Ir directo a Tienda Nube">🛒 Tienda Nube
+      directo</button>
   </div>
 
   <div class="main">
 
-    <!-- PANEL 1: CARGAR -->
     <div class="panel active" id="panel1">
+
       <div class="tipo-selector">
         <div class="tipo-btn active-juguetes" id="btnJuguetes" onclick="setTipo('juguetes')">
           <span class="tipo-icon">🧸</span> Juguetes / General
@@ -71,7 +66,8 @@
         <div class="card-title"><span class="icon">📁</span> Archivo Maestro (tu catálogo actual)</div>
         <div class="dropzone" id="dzMaestro">
           <div class="dropzone-icon">📤</div>
-          <div class="dropzone-text"><strong>Arrastrá tu archivo</strong> o hacé clic para seleccionar<br>.xls / .xlsx</div>
+          <div class="dropzone-text"><strong>Arrastrá tu archivo</strong> o hacé clic para seleccionar<br>.xls / .xlsx
+          </div>
           <div class="dropzone-file" id="dzMaestroFile"></div>
           <input type="file" accept=".xls,.xlsx,.csv" onchange="onMaestroFile(this.files[0])">
         </div>
@@ -87,7 +83,8 @@
         <div class="card-title"><span class="icon">📋</span> Lista del Proveedor (nuevos precios)</div>
         <div class="dropzone" id="dzProv">
           <div class="dropzone-icon">📤</div>
-          <div class="dropzone-text"><strong>Arrastrá el archivo del proveedor</strong> o hacé clic<br>.xls / .xlsx</div>
+          <div class="dropzone-text"><strong>Arrastrá el archivo del proveedor</strong> o hacé clic<br>.xls / .xlsx
+          </div>
           <div class="dropzone-file" id="dzProvFile"></div>
           <input type="file" accept=".xls,.xlsx,.csv" onchange="onProvFile(this.files[0])">
         </div>
@@ -124,15 +121,16 @@
       </div>
     </div>
 
-    <!-- PANEL 2: REVISAR -->
     <div class="panel" id="panel2">
       <div class="mode-banner" id="reviewBanner"></div>
+
       <div class="search-bar">
         <input class="search-input" id="searchInput" placeholder="Buscar por código, descripción..." oninput="filtrarTabla()">
         <span class="selection-counter" id="selectionCounter">0 seleccionados</span>
         <button class="btn-secondary" onclick="toggleMarginConfig()">⚙ Márgenes</button>
         <button class="btn-secondary" style="background:var(--orange-bg);color:var(--orange);border-color:rgba(251,191,36,.3)" onclick="mostrarDiagnostico()">🔍 Diagnóstico</button>
       </div>
+
       <div class="margin-config" id="marginConfig">
         <div class="card-title"><span class="icon">⚙</span> Configurar Margen de Ganancia</div>
         <div class="margin-row">
@@ -146,17 +144,18 @@
           <button class="btn-reload" onclick="recalcularMargenes()">Recalcular</button>
         </div>
       </div>
+
       <div class="stats-bar" id="statsBar"></div>
       <div class="table-wrap">
         <table><thead id="reviewHead"></thead><tbody id="reviewBody"></tbody></table>
       </div>
+
       <div class="btn-bar">
         <button class="btn-secondary" onclick="goStep(1)">← Volver</button>
         <button class="btn-primary" onclick="goStep(3)">Exportar ➜</button>
       </div>
     </div>
 
-    <!-- PANEL 3: EXPORTAR -->
     <div class="panel" id="panel3">
       <div class="mode-banner" id="exportBanner"></div>
       <div style="margin-bottom:20px"><p style="color:var(--text2);font-size:14px" id="exportInfo"></p></div>
@@ -209,10 +208,7 @@
         </div>
         <div class="table-wrap" style="max-height:350px;overflow-y:auto">
           <table>
-            <thead><tr>
-              <th style="width:40px"><input type="checkbox" class="cb" checked onchange="toggleAllTN(this.checked)"></th>
-              <th>Código de barras</th><th>Nombre</th><th>Match</th><th>Precio anterior</th><th>Precio nuevo</th>
-            </tr></thead>
+            <thead><tr><th style="width:40px"><input type="checkbox" class="cb" checked onchange="toggleAllTN(this.checked)"></th><th>Código de barras</th><th>Nombre</th><th>Match</th><th>Precio anterior</th><th>Precio nuevo</th></tr></thead>
             <tbody id="tnBody"></tbody>
           </table>
         </div>
@@ -225,11 +221,11 @@
       </div>
     </div>
 
-    <!-- PANEL 4: TIENDA NUBE DIRECTO -->
     <div class="panel" id="panel4">
       <div class="mode-banner" style="background:var(--accent-bg);color:var(--accent2);border:1px solid rgba(124,108,240,.2)">
         🛒 Modo directo — Tienda Nube
       </div>
+
       <div class="card" style="margin-top:20px">
         <div class="card-title"><span class="icon">🛒</span> Actualizar Tienda Nube (directo)</div>
         <p style="color:var(--text2);font-size:13px;margin-bottom:20px">Subí tu Excel de gestión actualizado y el CSV de Tienda Nube para generar el archivo con precios nuevos.</p>
@@ -268,14 +264,11 @@
         <p style="color:var(--text2);font-size:13px;margin-bottom:12px">Solo se modifica la columna <strong>Precio</strong>.</p>
         <div id="tnStatsDirect" style="margin-bottom:12px"></div>
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-          <span class="selection-counter" id="tnSelectionCounterDirect"></span>
+          <span class="selection-counter" id="tnSelectionCounter"></span>
         </div>
         <div class="table-wrap" style="max-height:350px;overflow-y:auto">
           <table>
-            <thead><tr>
-              <th style="width:40px"><input type="checkbox" class="cb" checked onchange="toggleAllTN(this.checked)"></th>
-              <th>Código de barras</th><th>Nombre</th><th>Match</th><th>Precio anterior</th><th>Precio nuevo</th>
-            </tr></thead>
+            <thead><tr><th style="width:40px"><input type="checkbox" class="cb" checked onchange="toggleAllTN(this.checked)"></th><th>Código de barras</th><th>Nombre</th><th>Match</th><th>Precio anterior</th><th>Precio nuevo</th></tr></thead>
             <tbody id="tnBodyDirect"></tbody>
           </table>
         </div>
@@ -287,8 +280,18 @@
       </div>
     </div>
 
-  </div><!-- /main -->
+  </div>
+
+  <div class="modal-overlay" id="diagModal">
+    <div class="modal">
+      <h3>🔍 Diagnóstico de Códigos</h3>
+      <p style="color:var(--text2);font-size:13px;margin-bottom:16px">Muestra cómo el sistema lee los códigos de cada archivo para detectar problemas de matching.</p>
+      <pre id="diagContent"></pre>
+      <div class="btn-bar"><button class="btn-secondary" onclick="document.getElementById('diagModal').classList.remove('visible')">Cerrar</button></div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
+
 </html>
