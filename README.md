@@ -1,4 +1,4 @@
-# ⚡ PriceSync v2 — Actualizador de Precios
+# ⚡ PriceSync 1.1 — Actualizador de Precios
 
 **Sistema de sincronización de precios para comercios con tienda física y e-commerce en Tienda Nube.**
 
