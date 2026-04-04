@@ -176,8 +176,8 @@ function PriceSync() {
       setGestData(data);
       // auto-detect columns
       setGestMapping({
-        barcode: detectColumn(data.headers, ["codigo de barra", "codigo_barra", "barcode", "ean", "cod_barra", "codigo barra", "codigodebarra", "cod barra"]) || "",
-        name: detectColumn(data.headers, ["nombre", "descripcion", "producto", "articulo", "name", "detalle", "denominacion"]) || "",
+        barcode: detectColumn(data.headers, ["codigo", "codigo de barra", "codigo_barra", "barcode", "ean", "cod_barra", "codigo barra", "codigodebarra", "cod barra"]) || "",
+        name: detectColumn(data.headers, ["descripcion", "nombre", "producto", "articulo", "name", "detalle", "denominacion"]) || "",
         stock: detectColumn(data.headers, ["stock", "cantidad", "existencia", "qty", "inventario", "disponible", "saldo"]) || "",
         price: detectColumn(data.headers, ["precio lista 2", "precio_lista2", "precio lista2", "preciolista2", "lista 2", "lista2", "precio de lista 2", "precio venta", "precio", "price", "pvp", "precio lista"]) || "",
         provider: detectColumn(data.headers, ["marca", "proveedor", "provider", "distribuidor", "fabricante", "supplier"]) || "",
