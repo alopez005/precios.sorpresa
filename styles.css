@@ -940,6 +940,30 @@ tbody tr.row-notfound {
   margin-top: 16px;
 }
 
+/* ===== PROVEEDORES WEB ===== */
+.btn-shortcut-web { background: rgba(52, 211, 153, 0.08); border: 1px solid rgba(52, 211, 153, 0.25); color: var(--green); font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600; padding: 8px 16px; border-radius: var(--radius-sm); cursor: pointer; transition: all var(--transition); white-space: nowrap; }
+.btn-shortcut-web:hover { background: rgba(52, 211, 153, 0.16); border-color: var(--green); }
+.web-warning { display: flex; align-items: center; gap: 10px; padding: 14px 18px; background: var(--orange-bg); border: 1px solid rgba(251,191,36,.25); border-radius: var(--radius-sm); font-size: 13px; color: var(--orange); margin-bottom: 20px; }
+.web-add-form { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 18px; }
+.web-add-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.web-add-row .field { min-width: 160px; }
+.web-supplier-card { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 12px; overflow: hidden; transition: border-color var(--transition); }
+.web-supplier-card:hover { border-color: var(--green); }
+.web-supplier-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.web-supplier-icon { width: 36px; height: 36px; background: rgba(52,211,153,.1); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.web-supplier-name { font-weight: 700; font-size: 14px; color: var(--text); }
+.web-supplier-urls { padding: 10px 16px; display: flex; flex-direction: column; gap: 6px; }
+.web-url-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg); border-radius: 6px; border: 1px solid var(--border); }
+.web-url-text { flex: 1; font-family: 'Space Mono', monospace; font-size: 11px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.web-url-remove { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; transition: all var(--transition); flex-shrink: 0; }
+.web-url-remove:hover { color: var(--red); background: var(--red-bg); }
+.web-progress-bar { height: 6px; background: var(--bg4); border-radius: 3px; overflow: hidden; margin-bottom: 12px; }
+.web-progress-fill { height: 100%; background: linear-gradient(90deg, var(--green), #6ee7b7); border-radius: 3px; transition: width 0.4s ease; width: 0%; }
+.web-progress-log { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; font-family: 'Space Mono', monospace; font-size: 11px; color: var(--text2); max-height: 180px; overflow-y: auto; line-height: 1.8; margin-bottom: 16px; }
+.web-log-line { color: var(--text2); }
+.web-log-line.success { color: var(--green); }
+.web-log-line.error { color: var(--red); }
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 768px) {
   .header {
@@ -960,7 +984,7 @@ tbody tr.row-notfound {
     flex-direction: column;
   }
 
-  .btn-shortcut-tn {
+  .btn-shortcut-tn, .btn-shortcut-web {
     font-size: 12px;
     padding: 6px 12px;
   }
@@ -983,4 +1007,6 @@ tbody tr.row-notfound {
   .search-bar {
     flex-wrap: wrap;
   }
+  .web-add-row { flex-direction: column; }
+  .web-add-row .field { min-width: 100%; }
 }
