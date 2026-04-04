@@ -1,297 +1,1138 @@
 <!DOCTYPE html>
 <html lang="es">
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PriceSync v2 — Actualizador de Precios</title>
+  <title>PriceSync 2.1 — Sincronizador de Stock y Precios</title>
+  <meta name="description" content="Sincroniza stock y precios entre tu software de gestión y Tienda Nube">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <link
-    href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
-    rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0b1120; }
+    #root { min-height: 100vh; }
+    select option { background: #1e293b; color: #e2e8f0; }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button { opacity: 1; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    /* Toggle switch */
+    .toggle-switch { position: relative; width: 52px; height: 28px; flex-shrink: 0; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background: #334155; border-radius: 28px; transition: all 0.3s;
+    }
+    .toggle-slider::before {
+      content: ""; position: absolute; height: 22px; width: 22px;
+      left: 3px; bottom: 3px; background: #94a3b8;
+      border-radius: 50%; transition: all 0.3s;
+    }
+    .toggle-switch input:checked + .toggle-slider { background: linear-gradient(135deg, #8b5cf6, #6366f1); }
+    .toggle-switch input:checked + .toggle-slider::before { transform: translateX(24px); background: #fff; }
+  </style>
 </head>
-
 <body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback, useRef, useMemo, useEffect } = React;
 
-  <div class="toast-container" id="toastContainer"></div>
 
-  <div class="confirm-overlay" id="confirmOverlay">
-    <div class="confirm-box">
-      <h4 id="confirmTitle">Confirmar</h4>
-      <p id="confirmMsg"></p>
-      <div class="btn-bar">
-        <button class="btn-secondary" onclick="closeConfirm(false)">Cancelar</button>
-        <button class="btn-primary" onclick="closeConfirm(true)">Confirmar</button>
-      </div>
+// ─── helpers ───────────────────────────────────────────────────────────
+
+function normalize(s) {
+  if (!s) return "";
+  return String(s).trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+}
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length === 0) return { headers: [], rows: [], delimiter: "," };
+  
+  // Smart delimiter detection
+  const firstLine = lines[0];
+  const commaCount = (firstLine.match(/,/g) || []).length;
+  const semicolonCount = (firstLine.match(/;/g) || []).length;
+  const delimiter = semicolonCount > commaCount ? ";" : ",";
+  
+  function splitCSVLine(line) {
+    const result = [];
+    let current = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+        else { inQuotes = !inQuotes; }
+      } else if (ch === delimiter && !inQuotes) {
+        result.push(current.trim());
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  }
+
+  const headers = splitCSVLine(lines[0]);
+  const rows = lines.slice(1).map(l => {
+    const vals = splitCSVLine(l);
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = vals[i] || ""; });
+    return obj;
+  });
+  return { headers, rows, delimiter };
+}
+
+// Read file trying UTF-8 first, fallback to Latin-1 if garbled
+async function readFileText(file) {
+  // Try UTF-8 first
+  const textUtf8 = await file.text();
+  // Check for replacement characters (sign of wrong encoding)
+  if (!textUtf8.includes("\uFFFD")) return textUtf8;
+  // Fallback: read as Latin-1 (Windows-1252)
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Error leyendo archivo"));
+    reader.readAsText(file, "windows-1252");
+  });
+}
+
+async function parseExcel(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        const headers = data.length > 0 ? Object.keys(data[0]) : [];
+        resolve({ headers, rows: data });
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = () => reject(new Error("Error leyendo archivo"));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function detectColumn(headers, keywords) {
+  const norm = headers.map(h => normalize(h));
+  for (const kw of keywords) {
+    const idx = norm.findIndex(h => h.includes(kw));
+    if (idx !== -1) return headers[idx];
+  }
+  return null;
+}
+
+// ─── main component ───────────────────────────────────────────────────
+function PriceSync() {
+  const [gestData, setGestData] = useState(null);
+  const [tnData, setTnData] = useState(null);
+  const [gestFile, setGestFile] = useState(null);
+  const [tnFile, setTnFile] = useState(null);
+  const [gestMapping, setGestMapping] = useState({ barcode: "", name: "", stock: "", price: "", provider: "" });
+  const [tnMapping, setTnMapping] = useState({ barcode: "", name: "", stock: "", sku: "", price: "", visibility: "" });
+  const [matched, setMatched] = useState(null);
+  const [unmatched, setUnmatched] = useState([]);
+  const [step, setStep] = useState(1);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [stockOffset, setStockOffset] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [syncPrices, setSyncPrices] = useState(true);
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const gestRef = useRef(null);
+  const tnRef = useRef(null);
+
+
+  // ── file handlers ──
+  const handleGestFile = useCallback(async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setGestFile(file);
+    setLoading(true);
+    setError(null);
+    try {
+      let data;
+      if (file.name.match(/\.xlsx?$/i) || file.name.match(/\.xlsm$/i)) {
+        data = await parseExcel(file);
+      } else {
+        const text = await readFileText(file);
+        data = parseCSV(text);
+      }
+      setGestData(data);
+      // auto-detect columns
+      setGestMapping({
+        barcode: detectColumn(data.headers, ["codigo de barra", "codigo_barra", "barcode", "ean", "cod_barra", "codigo barra", "codigodebarra", "cod barra"]) || "",
+        name: detectColumn(data.headers, ["nombre", "descripcion", "producto", "articulo", "name", "detalle", "denominacion"]) || "",
+        stock: detectColumn(data.headers, ["stock", "cantidad", "existencia", "qty", "inventario", "disponible", "saldo"]) || "",
+        price: detectColumn(data.headers, ["precio lista 2", "precio_lista2", "precio lista2", "preciolista2", "lista 2", "lista2", "precio de lista 2", "precio venta", "precio", "price", "pvp", "precio lista"]) || "",
+        provider: detectColumn(data.headers, ["proveedor", "provider", "distribuidor", "marca", "fabricante", "supplier"]) || "",
+      });
+      setSelectedProvider("");
+    } catch (err) { setError("Error al leer archivo de gestión: " + err.message); }
+    setLoading(false);
+  }, []);
+
+  const handleTnFile = useCallback(async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setTnFile(file);
+    setLoading(true);
+    setError(null);
+    try {
+      const text = await readFileText(file);
+      const data = parseCSV(text);
+      setTnData(data);
+      setTnMapping({
+        barcode: detectColumn(data.headers, ["codigo de barra", "codigo_barra", "barcode", "ean", "cod_barra", "codigo barra", "codigodebarra", "cod barra"]) || "",
+        name: detectColumn(data.headers, ["nombre", "descripcion", "producto", "name", "titulo"]) || "",
+        stock: detectColumn(data.headers, ["stock", "cantidad", "existencia", "qty", "inventario"]) || "",
+        sku: detectColumn(data.headers, ["sku", "codigo", "identificador", "variante"]) || "",
+        price: detectColumn(data.headers, ["precio", "price", "precio venta", "precio_venta", "pvp", "precio lista", "precio de venta", "valor"]) || "",
+        visibility: detectColumn(data.headers, ["mostrar en tienda", "mostrar_en_tienda", "mostrar", "visible", "publicado", "visibilidad"]) || "",
+      });
+    } catch (err) { setError("Error al leer CSV de Tienda Nube: " + err.message); }
+    setLoading(false);
+  }, []);
+
+  // Determine if price columns are effectively active (mapped AND toggle on)
+  const priceActive = syncPrices && gestMapping.price && tnMapping.price;
+
+  // ── provider list (unique values from provider column) ──
+  const providerList = useMemo(() => {
+    if (!gestData || !gestMapping.provider) return [];
+    const set = new Set();
+    gestData.rows.forEach(r => {
+      const val = String(r[gestMapping.provider] || "").trim();
+      if (val) set.add(val);
+    });
+    return [...set].sort((a, b) => a.localeCompare(b, "es"));
+  }, [gestData, gestMapping.provider]);
+
+  // ── filtered gestión rows (by provider if selected) ──
+  const gestFilteredRows = useMemo(() => {
+    if (!gestData) return [];
+    if (!selectedProvider || !gestMapping.provider) return gestData.rows;
+    return gestData.rows.filter(r => String(r[gestMapping.provider] || "").trim() === selectedProvider);
+  }, [gestData, gestMapping.provider, selectedProvider]);
+
+  // ── matching engine ──
+  const runMatch = useCallback(() => {
+    if (!gestData || !tnData) return;
+    setLoading(true);
+    
+    const results = [];
+    const usedTnIdxs = new Set();
+
+    // Pass 1: barcode exact match
+    if (gestMapping.barcode && tnMapping.barcode) {
+      gestFilteredRows.forEach((gRow) => {
+        const gBarcode = String(gRow[gestMapping.barcode] || "").trim();
+        if (!gBarcode) return;
+        const tnIdx = tnData.rows.findIndex((tRow, idx) => {
+          if (usedTnIdxs.has(idx)) return false;
+          return String(tRow[tnMapping.barcode] || "").trim() === gBarcode;
+        });
+        if (tnIdx !== -1) {
+          usedTnIdxs.add(tnIdx);
+          const gestStock = parseInt(gRow[gestMapping.stock]) || 0;
+          const newStock = Math.max(0, gestStock - stockOffset);
+          const gestPrice = gestMapping.price ? String(gRow[gestMapping.price] || "").trim() : "";
+          results.push({
+            matchType: "barcode",
+            gestName: gRow[gestMapping.name] || "",
+            tnName: tnData.rows[tnIdx][tnMapping.name] || "",
+            barcode: gBarcode,
+            gestStock,
+            gestPrice,
+            tnStock: parseInt(tnData.rows[tnIdx][tnMapping.stock]) || 0,
+            tnPrice: tnMapping.price ? String(tnData.rows[tnIdx][tnMapping.price] || "").trim() : "",
+            newStock,
+            newPrice: gestPrice,
+            tnIdx,
+            tnRow: tnData.rows[tnIdx],
+            confirmed: true,
+          });
+        }
+      });
+    }
+
+    // Pass 2: name fuzzy match
+    if (gestMapping.name && tnMapping.name) {
+      gestFilteredRows.forEach((gRow) => {
+        const gName = normalize(gRow[gestMapping.name]);
+        if (!gName) return;
+        // check not already matched by barcode
+        const gBarcode = gestMapping.barcode ? String(gRow[gestMapping.barcode] || "").trim() : "";
+        if (gBarcode && results.some(r => r.barcode === gBarcode)) return;
+
+        let bestIdx = -1;
+        let bestScore = 0;
+
+        tnData.rows.forEach((tRow, idx) => {
+          if (usedTnIdxs.has(idx)) return;
+          const tName = normalize(tRow[tnMapping.name]);
+          if (!tName) return;
+          // Score: exact > includes > word overlap
+          let score = 0;
+          if (gName === tName) score = 100;
+          else if (gName.includes(tName) || tName.includes(gName)) score = 70;
+          else {
+            const gWords = new Set(gName.split(" ").filter(w => w.length > 2));
+            const tWords = new Set(tName.split(" ").filter(w => w.length > 2));
+            let overlap = 0;
+            gWords.forEach(w => { if (tWords.has(w)) overlap++; });
+            const total = Math.max(gWords.size, tWords.size, 1);
+            score = (overlap / total) * 60;
+          }
+          if (score > bestScore && score >= 30) {
+            bestScore = score;
+            bestIdx = idx;
+          }
+        });
+
+        if (bestIdx !== -1) {
+          usedTnIdxs.add(bestIdx);
+          const gestStock = parseInt(gRow[gestMapping.stock]) || 0;
+          const newStock = Math.max(0, gestStock - stockOffset);
+          const gestPrice = gestMapping.price ? String(gRow[gestMapping.price] || "").trim() : "";
+          results.push({
+            matchType: bestScore >= 70 ? "name_strong" : "name_weak",
+            gestName: gRow[gestMapping.name] || "",
+            tnName: tnData.rows[bestIdx][tnMapping.name] || "",
+            barcode: gBarcode,
+            gestStock,
+            gestPrice,
+            tnStock: parseInt(tnData.rows[bestIdx][tnMapping.stock]) || 0,
+            tnPrice: tnMapping.price ? String(tnData.rows[bestIdx][tnMapping.price] || "").trim() : "",
+            newStock,
+            newPrice: gestPrice,
+            tnIdx: bestIdx,
+            tnRow: tnData.rows[bestIdx],
+            matchScore: bestScore,
+            confirmed: bestScore >= 70,
+          });
+        }
+      });
+    }
+
+    setMatched(results);
+
+    // Pass 3: detect products in gestión NOT matched at all (new products)
+    const matchedGestNames = new Set(results.map(r => normalize(r.gestName)));
+    const matchedBarcodes = new Set(results.map(r => r.barcode).filter(Boolean));
+    const newProducts = [];
+    gestFilteredRows.forEach((gRow) => {
+      const gName = gestMapping.name ? normalize(gRow[gestMapping.name]) : "";
+      const gBarcode = gestMapping.barcode ? String(gRow[gestMapping.barcode] || "").trim() : "";
+      if (gBarcode && matchedBarcodes.has(gBarcode)) return;
+      if (gName && matchedGestNames.has(gName)) return;
+      if (!gName && !gBarcode) return;
+      const gestStock = parseInt(gRow[gestMapping.stock]) || 0;
+      const gestPrice = gestMapping.price ? String(gRow[gestMapping.price] || "").trim() : "";
+      newProducts.push({
+        gestName: gRow[gestMapping.name] || "",
+        barcode: gBarcode,
+        gestStock,
+        gestPrice,
+        newStock: Math.max(0, gestStock - stockOffset),
+        newPrice: gestPrice,
+        selected: false,
+        gestRow: gRow,
+      });
+    });
+    setUnmatched(newProducts);
+
+    setStep(3);
+    setLoading(false);
+  }, [gestData, tnData, gestMapping, tnMapping, stockOffset, gestFilteredRows]);
+
+  // ── toggle confirmation ──
+  const toggleConfirm = useCallback((idx) => {
+    setMatched(prev => prev.map((r, i) => i === idx ? { ...r, confirmed: !r.confirmed } : r));
+  }, []);
+
+  // ── edit new stock ──
+  const editNewStock = useCallback((idx, val) => {
+    setMatched(prev => prev.map((r, i) => i === idx ? { ...r, newStock: Math.max(0, parseInt(val) || 0) } : r));
+  }, []);
+
+  // ── edit new price ──
+  const editNewPrice = useCallback((idx, val) => {
+    setMatched(prev => prev.map((r, i) => i === idx ? { ...r, newPrice: val } : r));
+  }, []);
+
+  // ── unmatched (new) products ──
+  const toggleNewProduct = useCallback((idx) => {
+    setUnmatched(prev => prev.map((r, i) => i === idx ? { ...r, selected: !r.selected } : r));
+  }, []);
+  const selectAllNew = useCallback((val) => {
+    setUnmatched(prev => prev.map(r => ({ ...r, selected: val })));
+  }, []);
+  const editNewProductStock = useCallback((idx, val) => {
+    setUnmatched(prev => prev.map((r, i) => i === idx ? { ...r, newStock: Math.max(0, parseInt(val) || 0) } : r));
+  }, []);
+  const editNewProductPrice = useCallback((idx, val) => {
+    setUnmatched(prev => prev.map((r, i) => i === idx ? { ...r, newPrice: val } : r));
+  }, []);
+  const [showNewProducts, setShowNewProducts] = useState(false);
+
+  // ── generate CSV for Tienda Nube ──
+  const [csvInfo, setCsvInfo] = useState(null);
+
+  function buildAndDownloadCSV() {
+    if (!matched || !tnData) return;
+    const confirmedMap = new Map();
+    const barcodeMap = new Map();
+    const priceMap = new Map();
+    matched.filter(r => r.confirmed).forEach(r => {
+      confirmedMap.set(r.tnIdx, r.newStock);
+      if (r.matchType !== "barcode" && r.barcode) {
+        const tnBarcode = tnMapping.barcode ? String(r.tnRow[tnMapping.barcode] || "").trim() : "";
+        if (!tnBarcode && tnMapping.barcode) {
+          barcodeMap.set(r.tnIdx, r.barcode);
+        }
+      }
+      // Only write prices if syncPrices is enabled
+      if (syncPrices && tnMapping.price && r.newPrice) {
+        priceMap.set(r.tnIdx, r.newPrice);
+      }
+    });
+
+    const delim = tnData.delimiter || ",";
+    const stockCol = tnMapping.stock;
+    const barcodeCol = tnMapping.barcode;
+    const priceCol = tnMapping.price;
+    const header = tnData.headers.map(h => {
+      return h.includes(delim) || h.includes('"') ? '"' + h.replace(/"/g, '""') + '"' : h;
+    }).join(delim);
+    const rows = tnData.rows.map((row, idx) => {
+      const updatedRow = { ...row };
+      if (confirmedMap.has(idx)) {
+        updatedRow[stockCol] = confirmedMap.get(idx);
+        // Set "Mostrar en tienda" based on stock
+        if (tnMapping.visibility) {
+          updatedRow[tnMapping.visibility] = confirmedMap.get(idx) > 0 ? "SI" : "NO";
+        }
+      }
+      if (barcodeCol && barcodeMap.has(idx)) {
+        updatedRow[barcodeCol] = barcodeMap.get(idx);
+      }
+      if (priceCol && priceMap.has(idx)) {
+        updatedRow[priceCol] = priceMap.get(idx);
+      }
+      return tnData.headers.map(h => {
+        const val = String(updatedRow[h] || "");
+        return val.includes(delim) || val.includes('"') || val.includes("\n")
+          ? '"' + val.replace(/"/g, '""') + '"'
+          : val;
+      }).join(delim);
+    });
+
+    // Append selected new products as new rows
+    const selectedNew = unmatched.filter(r => r.selected);
+    const newRows = selectedNew.map(r => {
+      const newRow = {};
+      tnData.headers.forEach(h => { newRow[h] = ""; });
+      if (tnMapping.name) newRow[tnMapping.name] = r.gestName;
+      if (tnMapping.barcode && r.barcode) newRow[tnMapping.barcode] = r.barcode;
+      if (tnMapping.stock) newRow[tnMapping.stock] = r.newStock;
+      // Set visibility for new products
+      if (tnMapping.visibility) {
+        newRow[tnMapping.visibility] = r.newStock > 0 ? "SI" : "NO";
+      }
+      // Only include price for new products if syncPrices is on
+      if (syncPrices && tnMapping.price && r.newPrice) newRow[tnMapping.price] = r.newPrice;
+      return tnData.headers.map(h => {
+        const val = String(newRow[h] || "");
+        return val.includes(delim) || val.includes('"') || val.includes("\n")
+          ? '"' + val.replace(/"/g, '""') + '"'
+          : val;
+      }).join(delim);
+    });
+
+    const csv = [header, ...rows, ...newRows].join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    
+    // Direct download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tiendanube_stock_actualizado.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    setCsvInfo({ barcodes: barcodeMap.size, newProducts: selectedNew.length, hiddenCount: matched.filter(r => r.confirmed && r.newStock === 0).length + selectedNew.filter(r => r.newStock === 0).length });
+  }
+
+  // ── download CSV with only dudosos (weak name matches) ──
+  function downloadDudososCSV() {
+    if (!matched || !tnData) return;
+    const dudosos = matched.filter(r => r.matchType === "name_weak");
+    if (dudosos.length === 0) return;
+
+    const delim = tnData.delimiter || ",";
+    // Build a simple CSV with the relevant columns for review
+    const headers = ["Producto Gestión", "Producto TiendaNube", "Cód. Barras Gestión", "Cód. Barras TN", "Score (%)", "Stock Gestión", "Stock TN"];
+    const headerLine = headers.map(h => '"' + h + '"').join(delim);
+    const rows = dudosos.map(r => {
+      const tnBarcode = tnMapping.barcode ? String(r.tnRow[tnMapping.barcode] || "").trim() : "";
+      return [
+        r.gestName,
+        r.tnName,
+        r.barcode || "",
+        tnBarcode,
+        Math.round(r.matchScore || 0),
+        r.gestStock,
+        r.tnStock,
+      ].map(v => {
+        const s = String(v);
+        return s.includes(delim) || s.includes('"') || s.includes("\n")
+          ? '"' + s.replace(/"/g, '""') + '"'
+          : s;
+      }).join(delim);
+    });
+
+    const csv = [headerLine, ...rows].join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "dudosos_para_revisar.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ── filtered results ──
+  const [filterType, setFilterType] = useState("all");
+  
+  const filtered = useMemo(() => {
+    if (!matched) return [];
+    let list = matched;
+    if (filterType === "barcode") list = list.filter(r => r.matchType === "barcode");
+    else if (filterType === "name") list = list.filter(r => r.matchType !== "barcode");
+    else if (filterType === "name_weak") list = list.filter(r => r.matchType === "name_weak");
+    else if (filterType === "name_strong") list = list.filter(r => r.matchType === "name_strong");
+    if (searchTerm) {
+      const term = normalize(searchTerm);
+      list = list.filter(r =>
+        normalize(r.gestName).includes(term) ||
+        normalize(r.tnName).includes(term) ||
+        (r.barcode && r.barcode.includes(searchTerm))
+      );
+    }
+    return list;
+  }, [matched, searchTerm, filterType]);
+
+  const stats = useMemo(() => {
+    if (!matched) return null;
+    const confirmed = matched.filter(r => r.confirmed).length;
+    const byBarcode = matched.filter(r => r.matchType === "barcode").length;
+    const byNameStrong = matched.filter(r => r.matchType === "name_strong").length;
+    const byNameWeak = matched.filter(r => r.matchType === "name_weak").length;
+    const byName = byNameStrong + byNameWeak;
+    return { total: matched.length, confirmed, byBarcode, byName, byNameStrong, byNameWeak };
+  }, [matched]);
+
+  // ── select component ──
+  const Select = ({ label, value, options, onChange, disabled }) => (
+    <div style={{ flex: 1, minWidth: 160, opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? "none" : "auto", transition: "opacity 0.3s" }}>
+      <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)} disabled={disabled} style={{
+        width: "100%", padding: "10px 12px", background: "#1e293b", color: "#e2e8f0",
+        border: "1px solid #334155", borderRadius: 8, fontSize: 14, cursor: disabled ? "not-allowed" : "pointer", outline: "none"
+      }}>
+        <option value="">— Seleccionar —</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
     </div>
-  </div>
+  );
 
-  <div class="header">
-    <div class="logo">
-      <div class="logo-icon">⚡</div>
-      <div class="logo-text">Price<span>Sync</span></div>
-    </div>
-    <div class="stepper">
-      <div class="step-indicator active" id="step1ind">
-        <div class="step-num">1</div> Cargar
-      </div>
-      <div class="step-arrow">›</div>
-      <div class="step-indicator" id="step2ind">
-        <div class="step-num">2</div> Revisar
-      </div>
-      <div class="step-arrow">›</div>
-      <div class="step-indicator" id="step3ind">
-        <div class="step-num">3</div> Exportar
-      </div>
-    </div>
-    <button class="btn-shortcut-tn" onclick="goDirectTN()" title="Ir directo a Tienda Nube">🛒 Tienda Nube
-      directo</button>
-  </div>
+  // ── match badge ──
+  const Badge = ({ type, score }) => {
+    const styles = {
+      barcode: { bg: "#065f46", color: "#6ee7b7", label: "Cód. Barras" },
+      name_strong: { bg: "#1e3a5f", color: "#7dd3fc", label: "Nombre ✓" },
+      name_weak: { bg: "#713f12", color: "#fde68a", label: `~${Math.round(score || 0)}%` },
+    };
+    const s = styles[type] || styles.name_weak;
+    return (
+      <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: s.bg, color: s.color, letterSpacing: 0.5 }}>
+        {s.label}
+      </span>
+    );
+  };
 
-  <div class="main">
-
-    <div class="panel active" id="panel1">
-
-      <div class="tipo-selector">
-        <div class="tipo-btn active-juguetes" id="btnJuguetes" onclick="setTipo('juguetes')">
-          <span class="tipo-icon">🧸</span> Juguetes / General
-        </div>
-        <div class="tipo-btn" id="btnLibros" onclick="setTipo('libros')">
-          <span class="tipo-icon">📚</span> Libros
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title"><span class="icon">📁</span> Archivo Maestro (tu catálogo actual)</div>
-        <div class="dropzone" id="dzMaestro">
-          <div class="dropzone-icon">📤</div>
-          <div class="dropzone-text"><strong>Arrastrá tu archivo</strong> o hacé clic para seleccionar<br>.xls / .xlsx
-          </div>
-          <div class="dropzone-file" id="dzMaestroFile"></div>
-          <input type="file" accept=".xls,.xlsx,.csv" onchange="onMaestroFile(this.files[0])">
-        </div>
-        <div class="field-group" id="maestroFields" style="display:none">
-          <div class="field"><label>Código de barras</label><select id="selMaestroEAN"></select></div>
-          <div class="field"><label>Descripción</label><select id="selMaestroDesc"></select></div>
-          <div class="field"><label>Precio de costo</label><select id="selMaestroPrecio"></select></div>
-          <div class="field"><label>Código interno / proveedor</label><select id="selMaestroCodInt"></select></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title"><span class="icon">📋</span> Lista del Proveedor (nuevos precios)</div>
-        <div class="dropzone" id="dzProv">
-          <div class="dropzone-icon">📤</div>
-          <div class="dropzone-text"><strong>Arrastrá el archivo del proveedor</strong> o hacé clic<br>.xls / .xlsx
-          </div>
-          <div class="dropzone-file" id="dzProvFile"></div>
-          <input type="file" accept=".xls,.xlsx,.csv" onchange="onProvFile(this.files[0])">
-        </div>
-        <div class="header-row-config" id="provSheetConfig" style="display:none">
-          <div class="field"><label>Hoja</label><select id="selProvSheet" onchange="onProvSheetChange()"></select></div>
-        </div>
-        <div class="header-row-config" id="provHeaderConfig" style="display:none">
-          <div class="field"><label>Fila de encabezados</label><input type="number" id="provHeaderRow" value="1" min="1" max="50"></div>
-          <button class="btn-reload" onclick="reloadProv()">↻ Recargar</button>
-          <span style="font-size:12px;color:var(--text3)">Si los encabezados no están en la fila 1, ajustá y recargá</span>
-        </div>
-        <div class="field-group" id="provFields" style="display:none">
-          <div class="field"><label>Código de barras</label><select id="selProvEAN"></select></div>
-          <div class="field"><label>Precio de lista</label><select id="selProvPrecio"></select></div>
-          <div class="field"><label>Descripción</label><select id="selProvDesc"></select></div>
-        </div>
-      </div>
-
-      <div class="card" id="ivaCard">
-        <div class="card-title"><span class="icon">🧾</span> Configuración de IVA</div>
-        <div class="iva-row">
-          <div class="field"><label>Precio del proveedor viene...</label>
-            <select id="selIVA">
-              <option value="neto">Neto (sin IVA)</option>
-              <option value="incluido">Con IVA incluido</option>
-            </select>
-          </div>
-          <div class="field"><label>Alícuota IVA %</label><input type="number" id="ivaRate" value="21" min="0" max="100" step="0.5"></div>
-        </div>
-      </div>
-
-      <div class="btn-bar">
-        <button class="btn-primary" id="btnProcesar" disabled onclick="procesar()">Procesar archivos ➜</button>
-      </div>
-    </div>
-
-    <div class="panel" id="panel2">
-      <div class="mode-banner" id="reviewBanner"></div>
-
-      <div class="search-bar">
-        <input class="search-input" id="searchInput" placeholder="Buscar por código, descripción..." oninput="filtrarTabla()">
-        <span class="selection-counter" id="selectionCounter">0 seleccionados</span>
-        <button class="btn-secondary" onclick="toggleMarginConfig()">⚙ Márgenes</button>
-        <button class="btn-secondary" style="background:var(--orange-bg);color:var(--orange);border-color:rgba(251,191,36,.3)" onclick="mostrarDiagnostico()">🔍 Diagnóstico</button>
-      </div>
-
-      <div class="margin-config" id="marginConfig">
-        <div class="card-title"><span class="icon">⚙</span> Configurar Margen de Ganancia</div>
-        <div class="margin-row">
-          <div class="field"><label>Margen %</label><input type="number" id="marginPct" value="40" min="0" max="500" step="1"></div>
-          <div class="field"><label>Cálculo</label>
-            <select id="marginMode">
-              <option value="sobre_costo">Sobre costo (costo × 1.4)</option>
-              <option value="sobre_venta">Sobre venta (costo / 0.6)</option>
-            </select>
-          </div>
-          <button class="btn-reload" onclick="recalcularMargenes()">Recalcular</button>
-        </div>
-      </div>
-
-      <div class="stats-bar" id="statsBar"></div>
-      <div class="table-wrap">
-        <table><thead id="reviewHead"></thead><tbody id="reviewBody"></tbody></table>
-      </div>
-
-      <div class="btn-bar">
-        <button class="btn-secondary" onclick="goStep(1)">← Volver</button>
-        <button class="btn-primary" onclick="goStep(3)">Exportar ➜</button>
-      </div>
-    </div>
-
-    <div class="panel" id="panel3">
-      <div class="mode-banner" id="exportBanner"></div>
-      <div style="margin-bottom:20px"><p style="color:var(--text2);font-size:14px" id="exportInfo"></p></div>
-
-      <div class="card">
-        <div class="card-title"><span class="icon">📊</span> Paso 3A — Excel Interno</div>
-        <p style="color:var(--text2);font-size:13px;margin-bottom:16px">Descargá el Excel con los precios actualizados para tu sistema de gestión.</p>
-        <button class="btn-primary" onclick="exportarInterno()">⬇ Descargar Excel Interno</button>
-      </div>
-
-      <div class="card" style="margin-top:20px">
-        <div class="card-title"><span class="icon">🛒</span> Paso 3B — Actualizar Tienda Nube</div>
-        <p style="color:var(--text2);font-size:13px;margin-bottom:20px">Subí tu Excel de gestión actualizado y el CSV de Tienda Nube para generar el archivo con precios nuevos.</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  return (
+    <div style={{ minHeight: "100vh", background: "linear-gradient(145deg, #0b1120 0%, #0f172a 50%, #121d33 100%)", color: "#e2e8f0", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif" }}>
+      {/* Header */}
+      <div style={{ padding: "28px 32px 20px", borderBottom: "1px solid #1e293b" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ width: 42, height: 42, borderRadius: 12, background: "linear-gradient(135deg, #3b82f6, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>⚡</div>
           <div>
-            <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px">① Tu Excel de gestión (con PVP actualizado)</div>
-            <div class="dropzone" id="dzGestion" style="padding:24px 16px">
-              <div class="dropzone-icon" style="font-size:28px">📁</div>
-              <div class="dropzone-text" style="font-size:13px"><strong>Subí tu archivo de gestión</strong><br>.xls / .xlsx</div>
-              <div class="dropzone-file" id="dzGestionFile"></div>
-              <input type="file" accept=".xls,.xlsx,.csv" onchange="onGestionFile(this.files[0])">
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, background: "linear-gradient(90deg, #60a5fa, #a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>PriceSync 2.1</h1>
+            <p style={{ margin: 0, fontSize: 12, color: "#64748b", fontWeight: 500 }}>Sincronizador de stock · Gestión → Tienda Nube</p>
+          </div>
+        </div>
+        {/* Steps */}
+        <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+          {["Subir archivos", "Mapear columnas", "Vista previa y descarga"].map((label, i) => (
+            <div key={i} onClick={() => { if (i + 1 < step || (i + 1 === 2 && gestData && tnData) || (i + 1 === 3 && matched)) setStep(i + 1); }}
+              style={{ flex: 1, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: step > i + 1 || (i + 1 <= step) ? "pointer" : "default",
+                background: step === i + 1 ? "linear-gradient(135deg, #1e3a5f, #1e293b)" : step > i + 1 ? "#1a2744" : "#0f172a",
+                border: step === i + 1 ? "1px solid #3b82f6" : "1px solid #1e293b",
+                color: step === i + 1 ? "#60a5fa" : step > i + 1 ? "#94a3b8" : "#475569",
+                transition: "all 0.2s"
+              }}>
+              <span style={{ marginRight: 8, opacity: 0.6 }}>{i + 1}.</span>{label}
             </div>
-            <div class="field-group" id="gestionFields" style="display:none;margin-top:12px">
-              <div class="field"><label>Código de barras</label><select id="selGestionEAN"></select></div>
-              <div class="field"><label>Descripción</label><select id="selGestionDesc"></select></div>
-              <div class="field"><label>Precio de venta (PVP)</label><select id="selGestionPVP"></select></div>
+          ))}
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{ padding: "24px 32px", maxWidth: 1200, margin: "0 auto" }}>
+        {error && (
+          <div style={{ padding: "12px 16px", background: "#451a1a", border: "1px solid #7f1d1d", borderRadius: 10, marginBottom: 20, fontSize: 14, color: "#fca5a5" }}>
+            ⚠️ {error}
+          </div>
+        )}
+
+        {/* STEP 1: File upload */}
+        {step === 1 && (
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+            {/* Gestión file */}
+            <div style={{ flex: 1, minWidth: 300, padding: 24, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14 }}>
+              <h3 style={{ margin: "0 0 6px", fontSize: 16, fontWeight: 700, color: "#f1f5f9" }}>📊 Archivo de Gestión</h3>
+              <p style={{ margin: "0 0 16px", fontSize: 13, color: "#64748b" }}>Excel (.xlsx/.xls) o CSV de tu software de juguetería</p>
+              <input ref={gestRef} type="file" accept=".xlsx,.xls,.xlsm,.csv,.tsv" onChange={handleGestFile} style={{ display: "none" }} />
+              <button onClick={() => gestRef.current?.click()} style={{
+                width: "100%", padding: "32px 20px", background: gestFile ? "#0c2d1f" : "#111827",
+                border: gestFile ? "2px solid #065f46" : "2px dashed #334155", borderRadius: 12, cursor: "pointer", color: "#e2e8f0", fontSize: 14, transition: "all 0.2s"
+              }}>
+                {gestFile ? (
+                  <div>
+                    <div style={{ fontSize: 28, marginBottom: 6 }}>✅</div>
+                    <div style={{ fontWeight: 700 }}>{gestFile.name}</div>
+                    <div style={{ fontSize: 12, color: "#6ee7b7", marginTop: 4 }}>{gestData?.rows.length || 0} productos encontrados</div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: 28, marginBottom: 6 }}>📁</div>
+                    <div style={{ fontWeight: 600 }}>Click para seleccionar archivo</div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>xlsx, xls, csv</div>
+                  </div>
+                )}
+              </button>
+              {gestData && (
+                <div style={{ marginTop: 12, padding: 12, background: "#1a2744", borderRadius: 8, fontSize: 12, color: "#94a3b8" }}>
+                  <strong>Columnas detectadas:</strong> {gestData.headers.slice(0, 6).join(", ")}{gestData.headers.length > 6 ? "..." : ""}
+                </div>
+              )}
+            </div>
+            {/* TiendaNube file */}
+            <div style={{ flex: 1, minWidth: 300, padding: 24, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14 }}>
+              <h3 style={{ margin: "0 0 6px", fontSize: 16, fontWeight: 700, color: "#f1f5f9" }}>🛒 CSV Tienda Nube</h3>
+              <p style={{ margin: "0 0 16px", fontSize: 13, color: "#64748b" }}>Archivo CSV descargado de Tienda Nube</p>
+              <input ref={tnRef} type="file" accept=".csv,.tsv" onChange={handleTnFile} style={{ display: "none" }} />
+              <button onClick={() => tnRef.current?.click()} style={{
+                width: "100%", padding: "32px 20px", background: tnFile ? "#0c2d1f" : "#111827",
+                border: tnFile ? "2px solid #065f46" : "2px dashed #334155", borderRadius: 12, cursor: "pointer", color: "#e2e8f0", fontSize: 14, transition: "all 0.2s"
+              }}>
+                {tnFile ? (
+                  <div>
+                    <div style={{ fontSize: 28, marginBottom: 6 }}>✅</div>
+                    <div style={{ fontWeight: 700 }}>{tnFile.name}</div>
+                    <div style={{ fontSize: 12, color: "#6ee7b7", marginTop: 4 }}>{tnData?.rows.length || 0} productos encontrados</div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: 28, marginBottom: 6 }}>📁</div>
+                    <div style={{ fontWeight: 600 }}>Click para seleccionar archivo</div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>csv</div>
+                  </div>
+                )}
+              </button>
+              {tnData && (
+                <div style={{ marginTop: 12, padding: 12, background: "#1a2744", borderRadius: 8, fontSize: 12, color: "#94a3b8" }}>
+                  <strong>Columnas detectadas:</strong> {tnData.headers.slice(0, 6).join(", ")}{tnData.headers.length > 6 ? "..." : ""}
+                </div>
+              )}
             </div>
           </div>
+        )}
+        {step === 1 && gestData && tnData && (
+          <div style={{ textAlign: "center", marginTop: 24 }}>
+            <button onClick={() => setStep(2)} style={{
+              padding: "14px 40px", background: "linear-gradient(135deg, #3b82f6, #6366f1)", color: "#fff",
+              border: "none", borderRadius: 10, fontSize: 16, fontWeight: 700, cursor: "pointer", transition: "transform 0.1s"
+            }}>Continuar → Mapear columnas</button>
+          </div>
+        )}
+
+        {/* STEP 2: Column mapping */}
+        {step === 2 && (
           <div>
-            <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px">② CSV actual de Tienda Nube</div>
-            <div class="dropzone" id="dzTN" style="padding:24px 16px">
-              <div class="dropzone-icon" style="font-size:28px">🛒</div>
-              <div class="dropzone-text" style="font-size:13px"><strong>Subí tu CSV de Tienda Nube</strong><br>.csv</div>
-              <div class="dropzone-file" id="dzTNFile"></div>
-              <input type="file" accept=".csv" onchange="onTNFile(this.files[0])">
+            <div style={{ padding: 24, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14, marginBottom: 20 }}>
+              <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 700 }}>📊 Columnas del archivo de Gestión</h3>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                <Select label="Código de barras" value={gestMapping.barcode} options={gestData?.headers || []}
+                  onChange={v => setGestMapping(p => ({ ...p, barcode: v }))} />
+                <Select label="Nombre / Descripción" value={gestMapping.name} options={gestData?.headers || []}
+                  onChange={v => setGestMapping(p => ({ ...p, name: v }))} />
+                <Select label="Stock" value={gestMapping.stock} options={gestData?.headers || []}
+                  onChange={v => setGestMapping(p => ({ ...p, stock: v }))} />
+                <Select label="Precio (Lista 2)" value={gestMapping.price} options={gestData?.headers || []}
+                  onChange={v => setGestMapping(p => ({ ...p, price: v }))} disabled={!syncPrices} />
+                <Select label="Proveedor (opcional)" value={gestMapping.provider} options={gestData?.headers || []}
+                  onChange={v => { setGestMapping(p => ({ ...p, provider: v })); setSelectedProvider(""); }} />
+              </div>
+              {/* Provider filter */}
+              {gestMapping.provider && providerList.length > 0 && (
+                <div style={{ marginTop: 16, padding: 16, background: "#1a2744", borderRadius: 10, border: selectedProvider ? "1px solid #8b5cf6" : "1px solid #334155", transition: "border-color 0.3s" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                    <span style={{ fontSize: 16 }}>🏭</span>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>Filtrar por proveedor</div>
+                      <div style={{ fontSize: 11, color: "#64748b" }}>Solo se compararán productos de este proveedor ({providerList.length} proveedores encontrados)</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <select value={selectedProvider} onChange={e => setSelectedProvider(e.target.value)} style={{
+                      flex: 1, minWidth: 200, padding: "10px 12px", background: "#1e293b", color: "#e2e8f0",
+                      border: "1px solid #334155", borderRadius: 8, fontSize: 14, cursor: "pointer", outline: "none"
+                    }}>
+                      <option value="">— Todos los proveedores —</option>
+                      {providerList.map(p => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                    {selectedProvider && (
+                      <button onClick={() => setSelectedProvider("")} style={{
+                        padding: "10px 16px", background: "#312e81", border: "1px solid #4338ca", borderRadius: 8, color: "#a5b4fc", fontSize: 13, fontWeight: 700, cursor: "pointer"
+                      }}>✕ Limpiar filtro</button>
+                    )}
+                  </div>
+                  {selectedProvider && (
+                    <div style={{ marginTop: 10, fontSize: 13, color: "#a78bfa", fontWeight: 600 }}>
+                      📦 {gestFilteredRows.length} productos de "{selectedProvider}" (de {gestData?.rows.length || 0} totales)
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div style={{ padding: 24, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14, marginBottom: 20 }}>
+              <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 700 }}>🛒 Columnas del CSV Tienda Nube</h3>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                <Select label="Código de barras" value={tnMapping.barcode} options={tnData?.headers || []}
+                  onChange={v => setTnMapping(p => ({ ...p, barcode: v }))} />
+                <Select label="Nombre / Descripción" value={tnMapping.name} options={tnData?.headers || []}
+                  onChange={v => setTnMapping(p => ({ ...p, name: v }))} />
+                <Select label="Stock" value={tnMapping.stock} options={tnData?.headers || []}
+                  onChange={v => setTnMapping(p => ({ ...p, stock: v }))} />
+                <Select label="Precio (destino)" value={tnMapping.price} options={tnData?.headers || []}
+                  onChange={v => setTnMapping(p => ({ ...p, price: v }))} disabled={!syncPrices} />
+              </div>
+            </div>
+
+            {/* Sync Prices Toggle + Stock Offset - side by side */}
+            <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 20 }}>
+              {/* Stock offset setting */}
+              <div style={{ flex: 1, minWidth: 280, padding: 24, background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14 }}>
+                <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 700 }}>⚙️ Configuración de stock</h3>
+                <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Restar al stock</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <button onClick={() => setStockOffset(Math.max(0, stockOffset - 1))} style={{ width: 36, height: 36, background: "#1e293b", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", fontSize: 18, cursor: "pointer" }}>−</button>
+                      <input type="number" value={stockOffset} onChange={e => setStockOffset(Math.max(0, parseInt(e.target.value) || 0))}
+                        style={{ width: 60, padding: "8px 12px", background: "#1e293b", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", fontSize: 16, textAlign: "center" }} />
+                      <button onClick={() => setStockOffset(stockOffset + 1)} style={{ width: 36, height: 36, background: "#1e293b", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", fontSize: 18, cursor: "pointer" }}>+</button>
+                    </div>
+                  </div>
+                  <p style={{ margin: 0, fontSize: 13, color: "#64748b", maxWidth: 400 }}>
+                    El stock final será: <strong style={{ color: "#60a5fa" }}>stock gestión − {stockOffset}</strong>. Ejemplo: si tenés 4 en gestión, Tienda Nube recibirá <strong style={{ color: "#6ee7b7" }}>{Math.max(0, 4 - stockOffset)}</strong>.
+                  </p>
+                </div>
+              </div>
+
+              {/* Sync prices toggle */}
+              <div style={{ flex: 1, minWidth: 280, padding: 24, background: "#0f172a", border: syncPrices ? "1px solid #6366f1" : "1px solid #1e293b", borderRadius: 14, transition: "border-color 0.3s" }}>
+                <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 700 }}>💲 Sincronizar precios</h3>
+                <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                  <label className="toggle-switch">
+                    <input type="checkbox" checked={syncPrices} onChange={e => setSyncPrices(e.target.checked)} />
+                    <span className="toggle-slider"></span>
+                  </label>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: syncPrices ? "#a78bfa" : "#64748b", transition: "color 0.3s" }}>
+                      {syncPrices ? "Activado" : "Desactivado"}
+                    </div>
+                    <p style={{ margin: "4px 0 0", fontSize: 13, color: "#64748b", maxWidth: 300 }}>
+                      {syncPrices
+                        ? "Los precios de gestión se copiarán al CSV de Tienda Nube."
+                        : "Solo se sincronizará el stock. Los precios no se modificarán."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ textAlign: "center" }}>
+              <button onClick={runMatch} disabled={!gestMapping.stock || !tnMapping.stock || (!gestMapping.barcode && !gestMapping.name) || (!tnMapping.barcode && !tnMapping.name)}
+                style={{
+                  padding: "14px 40px", background: "linear-gradient(135deg, #3b82f6, #6366f1)", color: "#fff",
+                  border: "none", borderRadius: 10, fontSize: 16, fontWeight: 700, cursor: "pointer",
+                  opacity: (!gestMapping.stock || !tnMapping.stock) ? 0.4 : 1
+                }}>
+                🔍 Sincronizar productos
+              </button>
             </div>
           </div>
-        </div>
-        <div class="btn-bar" style="margin-top:16px">
-          <button class="btn-primary" id="btnGenerarTN" disabled onclick="generarTiendaNube()">Comparar y generar CSV ➜</button>
-        </div>
-      </div>
+        )}
 
-      <div class="card" id="tnPreview" style="display:none;margin-top:20px">
-        <div class="card-title"><span class="icon">🛒</span> Vista previa — Cambios en Tienda Nube</div>
-        <p style="color:var(--text2);font-size:13px;margin-bottom:12px">Solo se modifica la columna <strong>Precio</strong>. Todas las demás quedan intactas.</p>
-        <div id="tnStats" style="margin-bottom:12px"></div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-          <span class="selection-counter" id="tnSelectionCounter"></span>
-        </div>
-        <div class="table-wrap" style="max-height:350px;overflow-y:auto">
-          <table>
-            <thead><tr><th style="width:40px"><input type="checkbox" class="cb" checked onchange="toggleAllTN(this.checked)"></th><th>Código de barras</th><th>Nombre</th><th>Match</th><th>Precio anterior</th><th>Precio nuevo</th></tr></thead>
-            <tbody id="tnBody"></tbody>
-          </table>
-        </div>
-        <div class="btn-bar"><button class="btn-primary" onclick="descargarTiendaNube()">⬇ Descargar CSV Tienda Nube</button></div>
-      </div>
+        {/* STEP 3: Preview & Download */}
+        {step === 3 && matched && (
+          <div>
+            {/* Mode indicator */}
+            {!syncPrices && (
+              <div style={{
+                padding: "10px 16px", marginBottom: 14, borderRadius: 10, display: "flex", alignItems: "center", gap: 10,
+                background: "#1e1b4b40", border: "1px solid #4338ca",
+              }}>
+                <span style={{ fontSize: 18 }}>ℹ️</span>
+                <span style={{ fontSize: 13, color: "#a5b4fc" }}>
+                  <strong>Modo solo stock</strong> — Los precios no se modificarán en el CSV de salida.
+                  <button onClick={() => { setStep(2); }} style={{
+                    marginLeft: 12, padding: "3px 10px", background: "#312e81", border: "1px solid #4338ca", borderRadius: 6, color: "#a5b4fc", fontSize: 12, cursor: "pointer"
+                  }}>Cambiar</button>
+                </span>
+              </div>
+            )}
 
-      <div class="btn-bar" style="margin-top:24px">
-        <button class="btn-secondary" onclick="goStep(2)">← Revisar</button>
-        <button class="btn-secondary" onclick="goStep(1)">🔄 Nueva carga</button>
+            {/* Provider filter info */}
+            {selectedProvider && (
+              <div style={{
+                padding: "10px 16px", marginBottom: 14, borderRadius: 10, display: "flex", alignItems: "center", gap: 10,
+                background: "#312e8140", border: "1px solid #6366f1",
+              }}>
+                <span style={{ fontSize: 18 }}>🏭</span>
+                <span style={{ fontSize: 13, color: "#a5b4fc" }}>
+                  <strong>Filtrado por proveedor:</strong> {selectedProvider} ({gestFilteredRows.length} productos)
+                  <button onClick={() => { setSelectedProvider(""); setStep(2); }} style={{
+                    marginLeft: 12, padding: "3px 10px", background: "#312e81", border: "1px solid #4338ca", borderRadius: 6, color: "#a5b4fc", fontSize: 12, cursor: "pointer"
+                  }}>Cambiar</button>
+                </span>
+              </div>
+            )}
+
+            {/* Visibility info */}
+            {tnMapping.visibility && (
+              <div style={{
+                padding: "10px 16px", marginBottom: 14, borderRadius: 10, display: "flex", alignItems: "center", gap: 10,
+                background: "#1a0a0a40", border: "1px solid #7f1d1d",
+              }}>
+                <span style={{ fontSize: 18 }}>👁️‍🗨️</span>
+                <span style={{ fontSize: 13, color: "#fca5a5" }}>
+                  <strong>Visibilidad automática</strong> — Los productos con stock 0 se marcarán como <strong>"NO"</strong> en "{tnMapping.visibility}" y no se mostrarán en la tienda. Los que tengan stock se marcarán como <strong>"SI"</strong>.
+                </span>
+              </div>
+            )}
+
+            {/* Stats bar - clickable filters */}
+            <div style={{ display: "flex", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
+              {[
+                { key: "all", label: "Total coincidencias", val: stats.total, color: "#60a5fa", bg: "#1e3a5f" },
+                { key: "barcode", label: "Por código de barras", val: stats.byBarcode, color: "#6ee7b7", bg: "#065f46" },
+                { key: "name", label: "Por nombre (todas)", val: stats.byName, color: "#fbbf24", bg: "#713f12" },
+                { key: "name_weak", label: "Nombre dudoso ⚠️", val: stats.byNameWeak, color: "#fb923c", bg: "#7c2d12" },
+              ].map(s => (
+                <div key={s.key} onClick={() => { setFilterType(filterType === s.key ? "all" : s.key); setShowNewProducts(false); }}
+                  style={{
+                    flex: 1, minWidth: 140, padding: "16px 20px", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
+                    background: filterType === s.key ? s.bg + "90" : s.bg + "40",
+                    border: filterType === s.key ? `2px solid ${s.color}` : `1px solid ${s.bg}`,
+                    transform: filterType === s.key ? "scale(1.02)" : "scale(1)",
+                  }}>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: s.color }}>{s.val}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{s.label}</div>
+                  {filterType === s.key && s.key !== "all" && (
+                    <div style={{ fontSize: 10, color: s.color, marginTop: 4, fontWeight: 700 }}>✕ Filtro activo</div>
+                  )}
+                </div>
+              ))}
+              {unmatched.length > 0 && (
+                <div onClick={() => { setFilterType(filterType === "new" ? "all" : "new"); setShowNewProducts(filterType !== "new"); }}
+                  style={{ flex: 1, minWidth: 140, padding: "16px 20px", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
+                    background: filterType === "new" ? "#854d0e90" : "#854d0e40",
+                    border: filterType === "new" ? "2px solid #f59e0b" : "1px solid #854d0e",
+                    transform: filterType === "new" ? "scale(1.02)" : "scale(1)",
+                  }}>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: "#f59e0b" }}>{unmatched.length}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Nuevos 🆕</div>
+                  {filterType === "new"
+                    ? <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 4, fontWeight: 700 }}>✕ Filtro activo</div>
+                    : <div style={{ fontSize: 10, color: "#fbbf24", marginTop: 4, fontWeight: 700 }}>{unmatched.filter(r => r.selected).length} seleccionados</div>
+                  }
+                </div>
+              )}
+            </div>
+
+            {/* Filter info banner */}
+            {filterType !== "all" && filterType !== "new" && (
+              <div style={{
+                padding: "10px 16px", marginBottom: 14, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "space-between",
+                background: filterType === "name_weak" ? "#7c2d1240" : filterType === "name" ? "#713f1240" : "#065f4640",
+                border: filterType === "name_weak" ? "1px solid #7c2d12" : filterType === "name" ? "1px solid #713f12" : "1px solid #065f46",
+              }}>
+                <span style={{ fontSize: 13, color: "#e2e8f0" }}>
+                  {filterType === "barcode" && `Mostrando ${filtered.length} coincidencias por código de barras`}
+                  {filterType === "name" && `Mostrando ${filtered.length} coincidencias por nombre — revisá que los pares sean correctos`}
+                  {filterType === "name_strong" && `Mostrando ${filtered.length} coincidencias fuertes por nombre`}
+                  {filterType === "name_weak" && `⚠️ Mostrando ${filtered.length} coincidencias dudosas — revisá y destildá las incorrectas`}
+                </span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {filterType === "name_weak" && (
+                    <button onClick={downloadDudososCSV} style={{
+                      padding: "4px 12px", background: "#7c2d12", border: "1px solid #fb923c", borderRadius: 6, color: "#fb923c", fontSize: 12, fontWeight: 700, cursor: "pointer"
+                    }}>⬇ Exportar dudosos</button>
+                  )}
+                  <button onClick={() => setFilterType("all")} style={{
+                    padding: "4px 12px", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, cursor: "pointer"
+                  }}>Ver todos</button>
+                </div>
+              </div>
+            )}
+            {filterType === "new" && (
+              <div style={{
+                padding: "10px 16px", marginBottom: 14, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "space-between",
+                background: "#854d0e40", border: "1px solid #854d0e",
+              }}>
+                <span style={{ fontSize: 13, color: "#fbbf24" }}>🆕 Mostrando {unmatched.length} productos nuevos — están en gestión pero NO en Tienda Nube</span>
+                <button onClick={() => { setFilterType("all"); setShowNewProducts(false); }} style={{
+                  padding: "4px 12px", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, cursor: "pointer"
+                }}>Ver todos</button>
+              </div>
+            )}
+
+            {filterType !== "new" && (<>
+            {/* Search + download */}
+            <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <input type="text" placeholder="🔍 Buscar por nombre o código..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+                  style={{ width: "100%", padding: "12px 16px", background: "#1e293b", border: "1px solid #334155", borderRadius: 10, color: "#e2e8f0", fontSize: 14, outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <button onClick={() => setStep(2)} style={{ padding: "12px 20px", background: "#1e293b", border: "1px solid #334155", borderRadius: 10, color: "#94a3b8", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                ← Volver a mapeo
+              </button>
+              <button onClick={buildAndDownloadCSV} style={{
+                padding: "12px 24px", background: "linear-gradient(135deg, #059669, #10b981)", border: "none", borderRadius: 10, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer",
+                boxShadow: "0 4px 14px rgba(16,185,129,0.3)"
+              }}>
+                ⬇ Descargar CSV ({stats.confirmed}{unmatched.filter(r=>r.selected).length > 0 ? " + " + unmatched.filter(r=>r.selected).length + " nuevos" : ""})
+              </button>
+            </div>
+
+            {/* Table */}
+            <div style={{ overflowX: "auto", borderRadius: 12, border: "1px solid #1e293b" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#1e293b" }}>
+                    <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>✓</th>
+                    <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Match</th>
+                    <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Producto Gestión</th>
+                    <th style={{ padding: "12px 14px", textAlign: "left", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Producto TiendaNube</th>
+                    <th style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Stock Gestión</th>
+                    <th style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Stock TN</th>
+                    <th style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Stock nuevo</th>
+                    {priceActive && (
+                      <>
+                        <th style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Precio Gestión</th>
+                        <th style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Precio TN</th>
+                        <th style={{ padding: "12px 14px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>Precio nuevo</th>
+                      </>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.length === 0 && (
+                    <tr><td colSpan={priceActive ? 10 : 7} style={{ padding: 40, textAlign: "center", color: "#475569" }}>No se encontraron coincidencias</td></tr>
+                  )}
+                  {filtered.map((r, i) => {
+                    const realIdx = matched.indexOf(r);
+                    return (
+                      <tr key={i} style={{ borderTop: "1px solid #1e293b", background: r.confirmed ? "transparent" : "#1a0a0a50", transition: "background 0.15s" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "#1e293b50"}
+                        onMouseLeave={e => e.currentTarget.style.background = r.confirmed ? "transparent" : "#1a0a0a50"}>
+                        <td style={{ padding: "10px 14px" }}>
+                          <input type="checkbox" checked={r.confirmed} onChange={() => toggleConfirm(realIdx)}
+                            style={{ width: 18, height: 18, cursor: "pointer", accentColor: "#3b82f6" }} />
+                        </td>
+                        <td style={{ padding: "10px 14px" }}><Badge type={r.matchType} score={r.matchScore} /></td>
+                        <td style={{ padding: "10px 14px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontWeight: 600, color: "#f1f5f9" }}>{r.gestName}</div>
+                          {r.barcode && <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>CB: {r.barcode}</div>}
+                        </td>
+                        <td style={{ padding: "10px 14px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontWeight: 600, color: "#f1f5f9" }}>{r.tnName}</div>
+                          {r.confirmed && r.matchType !== "barcode" && r.barcode && tnMapping.barcode && !String(r.tnRow[tnMapping.barcode] || "").trim() && (
+                            <div style={{ fontSize: 11, color: "#a78bfa", marginTop: 2 }}>📋 Se copiará CB: {r.barcode}</div>
+                          )}
+                          {tnMapping.barcode && String(r.tnRow[tnMapping.barcode] || "").trim() && (
+                            <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>CB: {String(r.tnRow[tnMapping.barcode]).trim()}</div>
+                          )}
+                        </td>
+                        <td style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 15 }}>{r.gestStock}</td>
+                        <td style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#64748b", fontSize: 15 }}>{r.tnStock}</td>
+                        <td style={{ padding: "10px 14px", textAlign: "center" }}>
+                          <input type="number" value={r.newStock} onChange={e => editNewStock(realIdx, e.target.value)}
+                            style={{ width: 64, padding: "6px 8px", background: r.newStock === 0 ? "#2a1215" : "#0f2e1f", border: r.newStock === 0 ? "1px solid #7f1d1d" : "1px solid #065f46", borderRadius: 6, color: r.newStock === 0 ? "#fca5a5" : "#6ee7b7", fontSize: 15, fontWeight: 800, textAlign: "center", transition: "all 0.2s" }} />
+                          {tnMapping.visibility && r.newStock === 0 && (
+                            <div style={{ fontSize: 10, color: "#f87171", marginTop: 3, fontWeight: 700 }}>👁️‍🗨️ Oculto</div>
+                          )}
+                        </td>
+                        {priceActive && (
+                          <>
+                            <td style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 14 }}>${r.gestPrice || "—"}</td>
+                            <td style={{ padding: "10px 14px", textAlign: "center", fontWeight: 700, color: "#64748b", fontSize: 14 }}>${r.tnPrice || "—"}</td>
+                            <td style={{ padding: "10px 14px", textAlign: "center" }}>
+                              <input type="text" value={r.newPrice || ""} onChange={e => editNewPrice(realIdx, e.target.value)}
+                                style={{ width: 80, padding: "6px 8px", background: "#1a1a2e", border: "1px solid #3b1f7a", borderRadius: 6, color: "#c4b5fd", fontSize: 14, fontWeight: 800, textAlign: "center" }} />
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            </>)}
+
+            {/* NEW PRODUCTS section */}
+            {unmatched.length > 0 && (filterType === "new" || showNewProducts) && (
+              <div style={{ marginTop: 20, padding: 20, background: "#0f172a", border: "1px solid #854d0e", borderRadius: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 10, background: "#854d0e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🆕</div>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#fbbf24" }}>Productos nuevos ({unmatched.length})</h3>
+                      <p style={{ margin: 0, fontSize: 12, color: "#a3a3a3" }}>Están en gestión pero NO en Tienda Nube. Seleccioná los que quieras agregar al CSV.</p>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => selectAllNew(true)} style={{ padding: "6px 14px", background: "#854d0e", border: "none", borderRadius: 6, color: "#fbbf24", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Seleccionar todos</button>
+                    <button onClick={() => selectAllNew(false)} style={{ padding: "6px 14px", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Deseleccionar</button>
+                    <button onClick={() => setShowNewProducts(!showNewProducts)} style={{ padding: "6px 14px", background: "#1e293b", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                      {showNewProducts ? "▲ Ocultar" : "▼ Mostrar lista"}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 13, color: "#fbbf24", marginBottom: showNewProducts ? 12 : 0 }}>
+                  {unmatched.filter(r => r.selected).length} de {unmatched.length} seleccionados para agregar
+                </div>
+                {(showNewProducts || filterType === "new") && (
+                  <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #334155" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ background: "#1e293b" }}>
+                          <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase" }}>Agregar</th>
+                          <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase" }}>Producto</th>
+                          <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase" }}>Cód. Barras</th>
+                          <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase" }}>Stock</th>
+                          <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase" }}>Stock nuevo</th>
+                          {priceActive && (
+                            <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 700, color: "#94a3b8", fontSize: 11, textTransform: "uppercase" }}>Precio</th>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {unmatched.map((r, i) => (
+                          <tr key={i} style={{ borderTop: "1px solid #1e293b", background: r.selected ? "#854d0e20" : "transparent" }}>
+                            <td style={{ padding: "8px 12px" }}>
+                              <input type="checkbox" checked={r.selected} onChange={() => toggleNewProduct(i)}
+                                style={{ width: 18, height: 18, cursor: "pointer", accentColor: "#f59e0b" }} />
+                            </td>
+                            <td style={{ padding: "8px 12px", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              <div style={{ fontWeight: 600, color: "#f1f5f9" }}>{r.gestName}</div>
+                            </td>
+                            <td style={{ padding: "8px 12px", textAlign: "center", fontSize: 12, color: r.barcode ? "#94a3b8" : "#475569" }}>{r.barcode || "—"}</td>
+                            <td style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, color: "#94a3b8" }}>{r.gestStock}</td>
+                            <td style={{ padding: "8px 12px", textAlign: "center" }}>
+                              <input type="number" value={r.newStock} onChange={e => editNewProductStock(i, e.target.value)}
+                                style={{ width: 64, padding: "5px 6px", background: "#0f2e1f", border: "1px solid #065f46", borderRadius: 6, color: "#6ee7b7", fontSize: 14, fontWeight: 800, textAlign: "center" }} />
+                            </td>
+                            {priceActive && (
+                              <td style={{ padding: "8px 12px", textAlign: "center" }}>
+                                <input type="text" value={r.newPrice || ""} onChange={e => editNewProductPrice(i, e.target.value)}
+                                  style={{ width: 80, padding: "5px 6px", background: "#1a1a2e", border: "1px solid #3b1f7a", borderRadius: 6, color: "#c4b5fd", fontSize: 14, fontWeight: 800, textAlign: "center" }} />
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {matched.length > 0 && (
+              <div style={{ textAlign: "center", marginTop: 24 }}>
+                <button onClick={buildAndDownloadCSV} style={{
+                  padding: "16px 48px", background: "linear-gradient(135deg, #059669, #10b981)", border: "none", borderRadius: 12, color: "#fff", fontSize: 18, fontWeight: 800, cursor: "pointer",
+                  boxShadow: "0 6px 20px rgba(16,185,129,0.35)", transition: "transform 0.1s"
+                }}>
+                  ⬇ Descargar CSV para Tienda Nube
+                </button>
+                <p style={{ marginTop: 10, fontSize: 12, color: "#64748b" }}>
+                  Se exportarán {stats.confirmed} productos confirmados
+                  {!syncPrices && <span style={{ color: "#a5b4fc" }}> (solo stock)</span>}
+                  {unmatched.filter(r=>r.selected).length > 0 && <span style={{ color: "#fbbf24" }}> + {unmatched.filter(r=>r.selected).length} nuevos</span>}
+                </p>
+                {csvInfo && csvInfo.barcodes > 0 && (
+                  <div style={{ marginTop: 8, padding: "8px 16px", display: "inline-block", background: "#2e1065", border: "1px solid #7c3aed", borderRadius: 8 }}>
+                    <span style={{ fontSize: 13, color: "#c4b5fd" }}>📋 {csvInfo.barcodes} código{csvInfo.barcodes !== 1 ? "s" : ""} de barras copiado{csvInfo.barcodes !== 1 ? "s" : ""} de gestión → Tienda Nube</span>
+                  </div>
+                )}
+                {csvInfo && csvInfo.newProducts > 0 && (
+                  <div style={{ marginTop: 8, padding: "8px 16px", display: "inline-block", background: "#713f12", border: "1px solid #f59e0b", borderRadius: 8, marginLeft: 8 }}>
+                    <span style={{ fontSize: 13, color: "#fbbf24" }}>🆕 {csvInfo.newProducts} producto{csvInfo.newProducts !== 1 ? "s" : ""} nuevo{csvInfo.newProducts !== 1 ? "s" : ""} agregado{csvInfo.newProducts !== 1 ? "s" : ""} al CSV</span>
+                  </div>
+                )}
+                {csvInfo && tnMapping.visibility && csvInfo.hiddenCount > 0 && (
+                  <div style={{ marginTop: 8, padding: "8px 16px", display: "inline-block", background: "#451a1a", border: "1px solid #7f1d1d", borderRadius: 8, marginLeft: 8 }}>
+                    <span style={{ fontSize: 13, color: "#fca5a5" }}>👁️‍🗨️ {csvInfo.hiddenCount} producto{csvInfo.hiddenCount !== 1 ? "s" : ""} oculto{csvInfo.hiddenCount !== 1 ? "s" : ""} en tienda (stock 0)</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {loading && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999 }}>
+            <div style={{ padding: "24px 40px", background: "#1e293b", borderRadius: 16, fontSize: 16, fontWeight: 600, color: "#60a5fa" }}>
+              ⏳ Procesando...
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
 
-    <div class="panel" id="panel4">
-      <div class="mode-banner" style="background:var(--accent-bg);color:var(--accent2);border:1px solid rgba(124,108,240,.2)">
-        🛒 Modo directo — Tienda Nube
-      </div>
-
-      <div class="card" style="margin-top:20px">
-        <div class="card-title"><span class="icon">🛒</span> Actualizar Tienda Nube (directo)</div>
-        <p style="color:var(--text2);font-size:13px;margin-bottom:20px">Subí tu Excel de gestión actualizado y el CSV de Tienda Nube para generar el archivo con precios nuevos.</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-          <div>
-            <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px">① Tu Excel de gestión (con PVP actualizado)</div>
-            <div class="dropzone" id="dzGestionDirect" style="padding:24px 16px">
-              <div class="dropzone-icon" style="font-size:28px">📁</div>
-              <div class="dropzone-text" style="font-size:13px"><strong>Subí tu archivo de gestión</strong><br>.xls / .xlsx</div>
-              <div class="dropzone-file" id="dzGestionDirectFile"></div>
-              <input type="file" accept=".xls,.xlsx,.csv" onchange="onGestionFile(this.files[0], true)">
-            </div>
-            <div class="field-group" id="gestionFieldsDirect" style="display:none;margin-top:12px">
-              <div class="field"><label>Código de barras</label><select id="selGestionEANDirect"></select></div>
-              <div class="field"><label>Descripción</label><select id="selGestionDescDirect"></select></div>
-              <div class="field"><label>Precio de venta (PVP)</label><select id="selGestionPVPDirect"></select></div>
-            </div>
-          </div>
-          <div>
-            <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px">② CSV actual de Tienda Nube</div>
-            <div class="dropzone" id="dzTNDirect" style="padding:24px 16px">
-              <div class="dropzone-icon" style="font-size:28px">🛒</div>
-              <div class="dropzone-text" style="font-size:13px"><strong>Subí tu CSV de Tienda Nube</strong><br>.csv</div>
-              <div class="dropzone-file" id="dzTNDirectFile"></div>
-              <input type="file" accept=".csv" onchange="onTNFile(this.files[0], true)">
-            </div>
-          </div>
-        </div>
-        <div class="btn-bar" style="margin-top:16px">
-          <button class="btn-primary" id="btnGenerarTNDirect" disabled onclick="generarTiendaNube(true)">Comparar y generar CSV ➜</button>
-        </div>
-      </div>
-
-      <div class="card" id="tnPreviewDirect" style="display:none;margin-top:20px">
-        <div class="card-title"><span class="icon">🛒</span> Vista previa — Cambios en Tienda Nube</div>
-        <p style="color:var(--text2);font-size:13px;margin-bottom:12px">Solo se modifica la columna <strong>Precio</strong>.</p>
-        <div id="tnStatsDirect" style="margin-bottom:12px"></div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-          <span class="selection-counter" id="tnSelectionCounter"></span>
-        </div>
-        <div class="table-wrap" style="max-height:350px;overflow-y:auto">
-          <table>
-            <thead><tr><th style="width:40px"><input type="checkbox" class="cb" checked onchange="toggleAllTN(this.checked)"></th><th>Código de barras</th><th>Nombre</th><th>Match</th><th>Precio anterior</th><th>Precio nuevo</th></tr></thead>
-            <tbody id="tnBodyDirect"></tbody>
-          </table>
-        </div>
-        <div class="btn-bar"><button class="btn-primary" onclick="descargarTiendaNube(true)">⬇ Descargar CSV Tienda Nube</button></div>
-      </div>
-
-      <div class="btn-bar" style="margin-top:24px">
-        <button class="btn-secondary" onclick="goStep(1)">← Volver al inicio</button>
-      </div>
-    </div>
-
-  </div>
-
-  <div class="modal-overlay" id="diagModal">
-    <div class="modal">
-      <h3>🔍 Diagnóstico de Códigos</h3>
-      <p style="color:var(--text2);font-size:13px;margin-bottom:16px">Muestra cómo el sistema lee los códigos de cada archivo para detectar problemas de matching.</p>
-      <pre id="diagContent"></pre>
-      <div class="btn-bar"><button class="btn-secondary" onclick="document.getElementById('diagModal').classList.remove('visible')">Cerrar</button></div>
-    </div>
-  </div>
-
-  <script src="app.js"></script>
+    ReactDOM.createRoot(document.getElementById('root')).render(<PriceSync />);
+  </script>
 </body>
-
 </html>
