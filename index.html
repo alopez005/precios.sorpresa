@@ -415,13 +415,13 @@ function PriceSync() {
       return h.includes(delim) || h.includes('"') ? '"' + h.replace(/"/g, '""') + '"' : h;
     }).join(delim);
     const rows = tnData.rows.map((row, idx) => {
+      // Skip rows that were not modified
+      if (!confirmedMap.has(idx)) return null;
       const updatedRow = { ...row };
-      if (confirmedMap.has(idx)) {
-        updatedRow[stockCol] = confirmedMap.get(idx);
-        // Set "Mostrar en tienda" based on stock
-        if (tnMapping.visibility) {
-          updatedRow[tnMapping.visibility] = confirmedMap.get(idx) > 0 ? "SI" : "NO";
-        }
+      updatedRow[stockCol] = confirmedMap.get(idx);
+      // Set "Mostrar en tienda" based on stock
+      if (tnMapping.visibility) {
+        updatedRow[tnMapping.visibility] = confirmedMap.get(idx) > 0 ? "SI" : "NO";
       }
       if (barcodeCol && barcodeMap.has(idx)) {
         updatedRow[barcodeCol] = barcodeMap.get(idx);
@@ -435,7 +435,7 @@ function PriceSync() {
           ? '"' + val.replace(/"/g, '""') + '"'
           : val;
       }).join(delim);
-    });
+    }).filter(Boolean);
 
     // Append selected new products as new rows
     const selectedNew = unmatched.filter(r => r.selected);
